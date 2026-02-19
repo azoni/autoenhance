@@ -15,7 +15,7 @@ import logging
 import os
 import re
 import zipfile
-from typing import List, Literal, Optional
+from typing import Literal, Optional
 
 import httpx
 import sentry_sdk
@@ -41,6 +41,19 @@ API_BASE = "https://api.autoenhance.ai/v3"
 
 # Limit concurrent downloads to avoid overwhelming the API
 MAX_CONCURRENT_DOWNLOADS = 5
+
+# Pre-compiled UUID pattern — validated once at import, not per-request
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+CONTENT_TYPE_MAP = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
 
 app = FastAPI(
     title="Autoenhance Batch Image Downloader",
@@ -104,10 +117,7 @@ async def batch_download_order_images(
     is returned.
     """
     # Validate order_id is a UUID before making upstream calls
-    uuid_pattern = re.compile(
-        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
-    )
-    if not uuid_pattern.match(order_id):
+    if not _UUID_RE.match(order_id):
         raise HTTPException(
             status_code=400,
             detail=f"Invalid order ID format. Expected a UUID, got: '{order_id}'",
@@ -283,28 +293,30 @@ async def batch_download_order_images(
         )
 
 
-@app.post("/api/create-order", include_in_schema=False)
-async def create_test_order(files: List[UploadFile] = File(...)):
-    """Upload images to Autoenhance and create a new order for testing."""
-    if not files:
-        raise HTTPException(status_code=400, detail="No files provided.")
+SAMPLE_IMAGES_DIR = Path(__file__).resolve().parent / "sample_images"
 
+
+async def _create_order(
+    order_name: str,
+    images: list[tuple[str, bytes, str]],
+) -> dict:
+    """Shared helper: create an Autoenhance order and upload images.
+
+    Args:
+        order_name: Display name for the order.
+        images: List of (image_name, content_bytes, content_type) tuples.
+
+    Returns:
+        Dict with order_id, images_uploaded count, and image details.
+    """
     api_key = _get_api_key()
     headers = {"x-api-key": api_key, "Content-Type": "application/json"}
 
-    content_type_map = {
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".png": "image/png",
-        ".webp": "image/webp",
-    }
-
     async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-        # 1. Create order
         order_resp = await client.post(
             f"{API_BASE}/orders",
             headers=headers,
-            json={"name": f"Test Order ({len(files)} images)"},
+            json={"name": order_name},
         )
         if order_resp.status_code not in (200, 201):
             raise HTTPException(
@@ -316,15 +328,8 @@ async def create_test_order(files: List[UploadFile] = File(...)):
         order_id = order_data["order_id"]
         logger.info("Created order %s", order_id)
 
-        # 2. Register and upload each image
         uploaded = []
-        for file in files:
-            content = await file.read()
-            ext = os.path.splitext(file.filename or "image.jpg")[1].lower()
-            content_type = content_type_map.get(ext, "image/jpeg")
-            image_name = os.path.splitext(file.filename or "image")[0]
-
-            # Register image with Autoenhance
+        for image_name, content, content_type in images:
             reg_resp = await client.post(
                 f"{API_BASE}/images/",
                 headers=headers,
@@ -342,7 +347,10 @@ async def create_test_order(files: List[UploadFile] = File(...)):
             upload_url = reg_data.get("s3PutObjectUrl") or reg_data.get("upload_url")
             image_id = reg_data.get("image_id")
 
-            # Upload binary to presigned S3 URL
+            if not upload_url:
+                logger.warning("No upload URL returned for %s", image_name)
+                continue
+
             put_resp = await client.put(
                 upload_url,
                 content=content,
@@ -361,14 +369,21 @@ async def create_test_order(files: List[UploadFile] = File(...)):
     }
 
 
-SAMPLE_IMAGES_DIR = Path(__file__).resolve().parent / "sample_images"
+@app.post("/api/create-order", include_in_schema=False)
+async def create_test_order(files: list[UploadFile] = File(...)):
+    """Upload images to Autoenhance and create a new order for testing."""
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided.")
 
-SAMPLE_CONTENT_TYPE_MAP = {
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".png": "image/png",
-    ".webp": "image/webp",
-}
+    images = []
+    for file in files:
+        content = await file.read()
+        ext = os.path.splitext(file.filename or "image.jpg")[1].lower()
+        content_type = CONTENT_TYPE_MAP.get(ext, "image/jpeg")
+        image_name = os.path.splitext(file.filename or "image")[0]
+        images.append((image_name, content, content_type))
+
+    return await _create_order(f"Test Order ({len(images)} images)", images)
 
 
 @app.post("/api/create-sample-order", include_in_schema=False)
@@ -379,72 +394,18 @@ async def create_sample_order():
 
     sample_files = sorted(
         p for p in SAMPLE_IMAGES_DIR.iterdir()
-        if p.suffix.lower() in SAMPLE_CONTENT_TYPE_MAP
+        if p.suffix.lower() in CONTENT_TYPE_MAP
     )
     if not sample_files:
         raise HTTPException(status_code=500, detail="No sample images found.")
 
-    api_key = _get_api_key()
-    headers = {"x-api-key": api_key, "Content-Type": "application/json"}
+    images = []
+    for path in sample_files:
+        content = await asyncio.to_thread(path.read_bytes)
+        content_type = CONTENT_TYPE_MAP[path.suffix.lower()]
+        images.append((path.stem, content, content_type))
 
-    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-        # 1. Create order
-        order_resp = await client.post(
-            f"{API_BASE}/orders",
-            headers=headers,
-            json={"name": f"Sample Order ({len(sample_files)} images)"},
-        )
-        if order_resp.status_code not in (200, 201):
-            raise HTTPException(
-                status_code=order_resp.status_code,
-                detail=f"Failed to create order: {order_resp.text}",
-            )
-
-        order_data = order_resp.json()
-        order_id = order_data["order_id"]
-        logger.info("Created sample order %s", order_id)
-
-        # 2. Register and upload each sample image
-        uploaded = []
-        for path in sample_files:
-            content_type = SAMPLE_CONTENT_TYPE_MAP[path.suffix.lower()]
-            image_name = path.stem
-
-            reg_resp = await client.post(
-                f"{API_BASE}/images/",
-                headers=headers,
-                json={
-                    "image_name": image_name,
-                    "order_id": order_id,
-                    "contentType": content_type,
-                },
-            )
-            if reg_resp.status_code not in (200, 201):
-                logger.warning("Failed to register %s: %s", image_name, reg_resp.text)
-                continue
-
-            reg_data = reg_resp.json()
-            upload_url = reg_data.get("s3PutObjectUrl") or reg_data.get("upload_url")
-            image_id = reg_data.get("image_id")
-
-            with open(path, "rb") as f:
-                content = f.read()
-            put_resp = await client.put(
-                upload_url,
-                content=content,
-                headers={"Content-Type": content_type},
-            )
-            if put_resp.status_code in (200, 201):
-                uploaded.append({"image_id": image_id, "name": image_name})
-                logger.info("Uploaded sample %s (%s)", image_name, image_id)
-            else:
-                logger.warning("S3 upload failed for %s: %d", image_name, put_resp.status_code)
-
-    return {
-        "order_id": order_id,
-        "images_uploaded": len(uploaded),
-        "images": uploaded,
-    }
+    return await _create_order(f"Sample Order ({len(images)} images)", images)
 
 
 @app.get("/", response_class=HTMLResponse)
