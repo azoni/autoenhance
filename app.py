@@ -19,7 +19,7 @@ from typing import Literal, Optional
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pathlib import Path
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -261,6 +261,123 @@ async def batch_download_order_images(
                 "X-Failed": str(len(failed)),
             },
         )
+
+
+@app.get("/", response_class=HTMLResponse)
+async def ui():
+    """Simple web UI for testing the batch download endpoint."""
+    return """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Autoenhance Batch Downloader</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f1117; color: #e1e4e8; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+  .card { background: #1c1f2b; border-radius: 12px; padding: 40px; width: 100%; max-width: 480px; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
+  h1 { font-size: 1.4rem; margin-bottom: 4px; }
+  .sub { color: #8b949e; font-size: 0.85rem; margin-bottom: 28px; }
+  label { display: block; font-size: 0.8rem; color: #8b949e; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+  input, select { width: 100%; padding: 10px 12px; border: 1px solid #30363d; border-radius: 8px; background: #161b22; color: #e1e4e8; font-size: 0.95rem; margin-bottom: 18px; outline: none; transition: border-color 0.2s; }
+  input:focus, select:focus { border-color: #58a6ff; }
+  .row { display: flex; gap: 12px; }
+  .row > div { flex: 1; }
+  .checks { display: flex; gap: 20px; margin-bottom: 22px; }
+  .checks label { display: flex; align-items: center; gap: 6px; text-transform: none; font-size: 0.9rem; color: #e1e4e8; cursor: pointer; }
+  .checks input { width: auto; margin: 0; }
+  button { width: 100%; padding: 12px; border: none; border-radius: 8px; background: #238636; color: #fff; font-size: 1rem; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+  button:hover { background: #2ea043; }
+  button:disabled { background: #30363d; color: #8b949e; cursor: not-allowed; }
+  #status { margin-top: 16px; padding: 12px; border-radius: 8px; font-size: 0.85rem; display: none; }
+  #status.info { display: block; background: #161b22; border: 1px solid #30363d; color: #8b949e; }
+  #status.ok { display: block; background: #0d1117; border: 1px solid #238636; color: #3fb950; }
+  #status.err { display: block; background: #0d1117; border: 1px solid #da3633; color: #f85149; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Autoenhance Batch Downloader</h1>
+  <p class="sub">Download all enhanced images for an order as a ZIP</p>
+  <form id="form">
+    <label for="order_id">Order ID</label>
+    <input type="text" id="order_id" placeholder="e.g. 100aefc4-8664-4180-9a97-42f428c6aace" required>
+    <div class="row">
+      <div>
+        <label for="format">Format</label>
+        <select id="format">
+          <option value="jpeg" selected>JPEG</option>
+          <option value="png">PNG</option>
+          <option value="webp">WebP</option>
+        </select>
+      </div>
+      <div>
+        <label for="quality">Quality (1-90)</label>
+        <input type="number" id="quality" min="1" max="90" placeholder="Default">
+      </div>
+    </div>
+    <div class="checks">
+      <label><input type="checkbox" id="dev_mode" checked> Dev mode (free, watermarked)</label>
+      <label><input type="checkbox" id="preview" checked> Preview</label>
+    </div>
+    <button type="submit" id="btn">Download ZIP</button>
+  </form>
+  <div id="status"></div>
+</div>
+<script>
+const form = document.getElementById('form');
+const btn = document.getElementById('btn');
+const status = document.getElementById('status');
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const orderId = document.getElementById('order_id').value.trim();
+  if (!orderId) return;
+
+  const params = new URLSearchParams();
+  params.set('format', document.getElementById('format').value);
+  params.set('dev_mode', document.getElementById('dev_mode').checked);
+  params.set('preview', document.getElementById('preview').checked);
+  const q = document.getElementById('quality').value;
+  if (q) params.set('quality', q);
+
+  btn.disabled = true;
+  btn.textContent = 'Downloading...';
+  status.className = 'info';
+  status.style.display = 'block';
+  status.textContent = 'Fetching images from Autoenhance — this may take a moment...';
+
+  try {
+    const resp = await fetch(`/orders/${orderId}/images?${params}`);
+    if (!resp.ok) {
+      const err = await resp.json();
+      throw new Error(err.detail?.message || err.detail || `HTTP ${resp.status}`);
+    }
+    const total = resp.headers.get('X-Total-Images') || '?';
+    const downloaded = resp.headers.get('X-Downloaded') || '?';
+    const failed = resp.headers.get('X-Failed') || '0';
+
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `order_${orderId.slice(0,8)}_images.zip`;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    status.className = 'ok';
+    status.textContent = `Done — ${downloaded}/${total} images downloaded.` + (parseInt(failed) > 0 ? ` ${failed} failed (see report in ZIP).` : '');
+  } catch (err) {
+    status.className = 'err';
+    status.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Download ZIP';
+  }
+});
+</script>
+</body>
+</html>"""
 
 
 @app.get("/health")
