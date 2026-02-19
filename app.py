@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import zipfile
+from pathlib import Path
 from typing import Literal, Optional
 
 import httpx
@@ -22,7 +23,6 @@ import sentry_sdk
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
-from pathlib import Path
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
@@ -53,6 +53,15 @@ CONTENT_TYPE_MAP = {
     ".jpeg": "image/jpeg",
     ".png": "image/png",
     ".webp": "image/webp",
+}
+
+# Map output format param to file extension
+_EXT_MAP = {
+    "jpeg": "jpg",
+    "png": "png",
+    "webp": "webp",
+    "avif": "avif",
+    "jxl": "jxl",
 }
 
 app = FastAPI(
@@ -234,14 +243,7 @@ async def batch_download_order_images(
                 },
             )
 
-        ext_map = {
-            "jpeg": "jpg",
-            "png": "png",
-            "webp": "webp",
-            "avif": "avif",
-            "jxl": "jxl",
-        }
-        ext = ext_map.get(image_format, image_format)
+        ext = _EXT_MAP.get(image_format, image_format)
 
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -432,7 +434,7 @@ async def health_check():
 @app.get("/sentry-debug", include_in_schema=False)
 async def trigger_error():
     """Trigger a test error to verify Sentry integration."""
-    division_by_zero = 1 / 0
+    1 / 0
 
 
 @app.get("/api/sentry/issues", include_in_schema=False)
