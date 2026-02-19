@@ -280,8 +280,28 @@ async def ui():
   .topbar svg { height: 28px; }
   .topbar span { color: #fff; font-size: 1rem; font-weight: 600; letter-spacing: -0.2px; }
   .topbar .badge { background: linear-gradient(135deg, #3bd8be, #77bff6); color: #222173; font-size: 0.7rem; font-weight: 700; padding: 2px 8px; border-radius: 9999px; margin-left: 8px; }
-  main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 40px 20px; width: 100%; }
+  main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px 20px; width: 100%; }
   .card { background: #ffffff; border-radius: 12px; padding: 40px; width: 100%; max-width: 500px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -2px rgba(0,0,0,0.06); }
+  .info-panel { background: #ffffff; border-radius: 12px; padding: 32px 36px; width: 100%; max-width: 500px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -2px rgba(0,0,0,0.06); margin-top: 20px; }
+  .info-panel h2 { font-size: 1.1rem; font-weight: 700; color: #222173; margin-bottom: 16px; }
+  .info-panel h3 { font-size: 0.85rem; font-weight: 600; color: #222173; margin: 18px 0 8px 0; }
+  .info-panel h3:first-of-type { margin-top: 0; }
+  .info-panel p { font-size: 0.82rem; color: #4f5c65; line-height: 1.55; margin-bottom: 6px; }
+  .info-panel .tag { display: inline-block; font-size: 0.68rem; font-weight: 600; padding: 2px 7px; border-radius: 4px; margin-right: 4px; }
+  .info-panel .tag.batch { background: #e5f1fb; color: #222173; }
+  .info-panel .tag.normal { background: #f0f0f5; color: #4f5c65; }
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 12px 0; }
+  .compare .col { padding: 10px 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.5; }
+  .compare .col.left { background: #f0f0f5; color: #4f5c65; }
+  .compare .col.right { background: linear-gradient(135deg, rgba(59,216,190,0.1), rgba(119,191,246,0.1)); color: #222173; }
+  .compare .col strong { display: block; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 4px; opacity: 0.7; }
+  .handled { list-style: none; padding: 0; }
+  .handled li { font-size: 0.8rem; color: #4f5c65; padding: 6px 0; border-bottom: 1px solid #f0f0f5; display: flex; gap: 8px; align-items: baseline; }
+  .handled li:last-child { border-bottom: none; }
+  .handled .check { color: #3bd8be; font-weight: 700; flex-shrink: 0; }
+  details summary { cursor: pointer; font-size: 0.85rem; font-weight: 600; color: #222173; padding: 4px 0; }
+  details summary:hover { color: #3bd8be; }
+  details[open] summary { margin-bottom: 12px; }
   h1 { font-size: 1.5rem; font-weight: 700; color: #222173; margin-bottom: 4px; }
   .sub { color: #4f5c65; font-size: 0.9rem; margin-bottom: 28px; }
   label { display: block; font-size: 0.78rem; color: #4f5c65; margin-bottom: 6px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; }
@@ -344,6 +364,36 @@ async def ui():
     <button type="submit" id="btn">Download ZIP</button>
   </form>
   <div id="status"></div>
+</div>
+<div class="info-panel">
+  <details open>
+    <summary>How it works &mdash; Batch vs Normal endpoints</summary>
+
+    <div class="compare">
+      <div class="col left">
+        <strong>Normal endpoint</strong>
+        1 request &rarr; 1 resource<br>
+        Fast, all-or-nothing<br>
+        Small payload, simple error handling
+      </div>
+      <div class="col right">
+        <strong>Batch endpoint (this)</strong>
+        1 request &rarr; N resources<br>
+        Slower, partial success is valid<br>
+        Large payload, needs concurrency &amp; throttling
+      </div>
+    </div>
+
+    <h3>Challenges &amp; how each is handled</h3>
+    <ul class="handled">
+      <li><span class="check">&#10003;</span><span><strong>Concurrency</strong> &mdash; Images download in parallel via <code>asyncio.gather</code> with a semaphore (max 5) to balance speed against API rate limits.</span></li>
+      <li><span class="check">&#10003;</span><span><strong>Partial failure</strong> &mdash; If some images fail (still processing, timeout), we return what succeeded + a <code>_download_report.txt</code> inside the ZIP.</span></li>
+      <li><span class="check">&#10003;</span><span><strong>Timeouts</strong> &mdash; Each image download has a 60s timeout. The overall request scales with order size; headers report total/downloaded/failed counts.</span></li>
+      <li><span class="check">&#10003;</span><span><strong>Response format</strong> &mdash; ZIP archive chosen over multipart (poor client support) or base64 JSON (33% overhead). Universally supported and compresses well.</span></li>
+      <li><span class="check">&#10003;</span><span><strong>Redirects</strong> &mdash; Autoenhance returns 302 &rarr; asset server &rarr; S3. The HTTP client follows redirects transparently.</span></li>
+      <li><span class="check">&#10003;</span><span><strong>Memory</strong> &mdash; Images are buffered in-memory before ZIP creation. Suitable for typical orders (&lt;50 images). For very large orders, streaming ZIP or an async job pattern would be the next step.</span></li>
+    </ul>
+  </details>
 </div>
 </main>
 <div class="footer">Batch endpoint for <a href="https://autoenhance.ai" target="_blank">autoenhance.ai</a> &mdash; <a href="/docs">API Docs</a></div>
