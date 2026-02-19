@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 os.environ["AUTOENHANCE_API_KEY"] = "test-key-for-unit-tests"
 
+import app as app_module
 from app import app
 
 client = TestClient(app)
@@ -28,7 +29,7 @@ FAKE_IMAGE_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
 # ---------------------------------------------------------------------------
 
 def make_mock_client(order_response=None, image_responses=None, order_status=200):
-    """Return a patched AsyncClient class that uses a mock transport."""
+    """Return a mock AsyncClient instance that uses a mock transport."""
 
     if order_response is None:
         order_response = {
@@ -61,16 +62,7 @@ def make_mock_client(order_response=None, image_responses=None, order_status=200
         return httpx.Response(404, json={"detail": "Not found"})
 
     transport = httpx.MockTransport(handler)
-
-    _OriginalAsyncClient = httpx.AsyncClient
-
-    class MockedAsyncClient(_OriginalAsyncClient):
-        def __init__(self, **kwargs):
-            kwargs.pop("timeout", None)
-            kwargs.pop("follow_redirects", None)
-            super().__init__(transport=transport, **kwargs)
-
-    return MockedAsyncClient
+    return httpx.AsyncClient(transport=transport)
 
 
 # ---------------------------------------------------------------------------
@@ -91,8 +83,9 @@ class TestInputValidation:
         resp = client.get("/orders/%20%20%20/images")
         assert resp.status_code == 400
 
-    def test_valid_uuid_accepted(self):
+    def test_valid_uuid_accepted(self, monkeypatch):
         # Won't be 400 — proves UUID validation passed
+        monkeypatch.setattr(app_module, "_http_client", make_mock_client())
         resp = client.get(f"/orders/{VALID_ORDER_ID}/images?dev_mode=true")
         assert resp.status_code != 400
 
@@ -103,7 +96,7 @@ class TestInputValidation:
 
 class TestSuccessfulDownload:
     def test_full_success_returns_zip(self, monkeypatch):
-        monkeypatch.setattr(httpx, "AsyncClient", make_mock_client())
+        monkeypatch.setattr(app_module, "_http_client", make_mock_client())
 
         resp = client.get(f"/orders/{VALID_ORDER_ID}/images?dev_mode=true&format=jpeg")
         assert resp.status_code == 200
@@ -118,7 +111,7 @@ class TestSuccessfulDownload:
         assert all(n.endswith(".jpg") for n in names)
 
     def test_zip_contains_correct_filenames(self, monkeypatch):
-        monkeypatch.setattr(httpx, "AsyncClient", make_mock_client())
+        monkeypatch.setattr(app_module, "_http_client", make_mock_client())
 
         resp = client.get(f"/orders/{VALID_ORDER_ID}/images?format=png")
         zf = zipfile.ZipFile(io.BytesIO(resp.content))
@@ -133,7 +126,7 @@ class TestSuccessfulDownload:
 
 class TestPartialFailure:
     def test_partial_failure_includes_report(self, monkeypatch):
-        monkeypatch.setattr(httpx, "AsyncClient", make_mock_client(
+        monkeypatch.setattr(app_module, "_http_client", make_mock_client(
             image_responses={
                 "img-1": (200, FAKE_IMAGE_BYTES),
                 "img-2": (500, b""),
@@ -151,7 +144,7 @@ class TestPartialFailure:
         assert "img-2" in report
 
     def test_all_fail_returns_422(self, monkeypatch):
-        monkeypatch.setattr(httpx, "AsyncClient", make_mock_client(
+        monkeypatch.setattr(app_module, "_http_client", make_mock_client(
             image_responses={
                 "img-1": (500, b""),
                 "img-2": (500, b""),
@@ -170,7 +163,7 @@ class TestPartialFailure:
 
 class TestEdgeCases:
     def test_empty_order_returns_404(self, monkeypatch):
-        monkeypatch.setattr(httpx, "AsyncClient", make_mock_client(
+        monkeypatch.setattr(app_module, "_http_client", make_mock_client(
             order_response={
                 "order_id": VALID_ORDER_ID,
                 "name": "Empty Order",
@@ -184,7 +177,7 @@ class TestEdgeCases:
 
     def test_order_not_found(self, monkeypatch):
         not_found_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-        monkeypatch.setattr(httpx, "AsyncClient", make_mock_client(
+        monkeypatch.setattr(app_module, "_http_client", make_mock_client(
             order_status=404,
             order_response={"detail": "Not found"},
         ))
@@ -193,7 +186,7 @@ class TestEdgeCases:
         assert resp.status_code == 404
 
     def test_duplicate_image_names_deduplicated(self, monkeypatch):
-        monkeypatch.setattr(httpx, "AsyncClient", make_mock_client(
+        monkeypatch.setattr(app_module, "_http_client", make_mock_client(
             order_response={
                 "order_id": VALID_ORDER_ID,
                 "name": "Dupes",
