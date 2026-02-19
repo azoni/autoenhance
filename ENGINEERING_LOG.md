@@ -47,4 +47,13 @@ Technical test — build a batch endpoint to download all images for an order.
 - **Timeouts**: Risk scales with image count. We use a 60s httpx timeout per image. For production, a webhook/async pattern (POST to start, poll for result) would be more robust.
 - **Rate limiting**: We throttle upstream calls via semaphore to avoid hitting Autoenhance API limits.
 
+**Assumptions surfaced:**
+- We're downstream of the upload pipeline — we don't control when or how images are uploaded and enhanced.
+- Enhancement timing is unknown — images could still be processing when the batch endpoint is called.
+- No webhook/callback exists to tell us when an order is fully processed — caller must know when to call.
+- Rate limits are undocumented — our semaphore (5) is a safe guess, could be tuned.
+- Order response schema is partially documented — we handle field name variations defensively.
+
+**Possible extensions noted:** poll-until-ready mode, async job pattern for large orders, webhook-triggered downloads.
+
 **Live URL:** https://autoenhance.onrender.com
