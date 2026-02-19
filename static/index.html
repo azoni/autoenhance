@@ -189,22 +189,10 @@
 </div>
 <div class="card">
   <h1>Try It</h1>
-  <p class="sub">Test the batch endpoint with a real order</p>
-  <details id="create-section" class="create-order">
-    <summary>Need a test order? Try it here</summary>
-    <div class="create-body">
-      <button type="button" id="sample-btn" onclick="createSampleOrder()">Try Demo &mdash; Use Sample Images</button>
-      <p class="create-hint" style="text-align:center;color:#a0a8b4;font-size:0.72rem;">Uploads 3 bundled real-estate photos to Autoenhance. No files needed.</p>
-      <div style="display:flex;align-items:center;gap:10px;margin:4px 0 2px 0;"><hr style="flex:1;border:none;border-top:1px solid #e0e0ea;"><span style="font-size:0.72rem;color:#a0a8b4;">or upload your own</span><hr style="flex:1;border:none;border-top:1px solid #e0e0ea;"></div>
-      <label for="upload_files" style="font-size:0.75rem;color:#6c7086;text-transform:none;letter-spacing:0;font-weight:400;margin-bottom:2px;">Select one or more images:</label>
-      <input type="file" id="upload_files" multiple accept=".jpg,.jpeg,.png,.webp">
-      <button type="button" id="create-btn" onclick="createTestOrder()">Upload &amp; Create Order</button>
-      <div id="create-status"></div>
-    </div>
-  </details>
+  <p class="sub">Paste an order ID to download its enhanced images instantly</p>
   <form id="form">
     <label for="order_id">Order ID</label>
-    <input type="text" id="order_id" placeholder="e.g. 100aefc4-8664-4180-9a97-42f428c6aace" required>
+    <input type="text" id="order_id" placeholder="Paste your order UUID here" required>
     <div class="row">
       <div>
         <label for="format">Format</label>
@@ -227,6 +215,18 @@
   </form>
   <div id="poll-status"></div>
   <div id="status"></div>
+  <details id="create-section" class="create-order" style="margin-top:20px;margin-bottom:0;">
+    <summary>Don't have an order? Create one here</summary>
+    <div class="create-body">
+      <button type="button" id="sample-btn" onclick="createSampleOrder()">Try Demo &mdash; Use Sample Images</button>
+      <p class="create-hint" style="text-align:center;color:#a0a8b4;font-size:0.72rem;">Uploads 3 bundled real-estate photos to Autoenhance. No files needed.</p>
+      <div style="display:flex;align-items:center;gap:10px;margin:4px 0 2px 0;"><hr style="flex:1;border:none;border-top:1px solid #e0e0ea;"><span style="font-size:0.72rem;color:#a0a8b4;">or upload your own</span><hr style="flex:1;border:none;border-top:1px solid #e0e0ea;"></div>
+      <label for="upload_files" style="font-size:0.75rem;color:#6c7086;text-transform:none;letter-spacing:0;font-weight:400;margin-bottom:2px;">Select one or more images:</label>
+      <input type="file" id="upload_files" multiple accept=".jpg,.jpeg,.png,.webp">
+      <button type="button" id="create-btn" onclick="createTestOrder()">Upload &amp; Create Order</button>
+      <div id="create-status"></div>
+    </div>
+  </details>
 </div>
 <div class="info-panel">
   <details open>
