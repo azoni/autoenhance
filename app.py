@@ -300,6 +300,9 @@ async def ui():
   .handled li:last-child { border-bottom: none; }
   .handled .check { color: #3bd8be; font-weight: 700; flex-shrink: 0; }
   .handled .assume { color: #e09f3e; font-weight: 700; flex-shrink: 0; font-size: 0.9rem; }
+  .handled .prod { flex-shrink: 0; font-size: 0.65rem; }
+  .handled .prod.cur { color: #3bd8be; }
+  .handled .prod.next { color: #d0d5dd; }
   details summary { cursor: pointer; font-size: 0.85rem; font-weight: 600; color: #222173; padding: 4px 0; }
   details summary:hover { color: #3bd8be; }
   details[open] summary { margin-bottom: 12px; }
@@ -413,6 +416,57 @@ async def ui():
       <li><span class="check">&#8594;</span><span><strong>Poll-until-ready</strong> &mdash; Add a <code>wait=true</code> param that checks image statuses and retries until all are processed before downloading.</span></li>
       <li><span class="check">&#8594;</span><span><strong>Async job pattern</strong> &mdash; For large orders: <code>POST /jobs</code> starts the download, returns a job ID; <code>GET /jobs/{id}</code> returns status or the ZIP when ready.</span></li>
       <li><span class="check">&#8594;</span><span><strong>Webhook integration</strong> &mdash; If Autoenhance supports completion webhooks, trigger the batch download automatically when an order finishes processing.</span></li>
+    </ul>
+  </details>
+</div>
+<div class="info-panel">
+  <details>
+    <summary>Production considerations</summary>
+
+    <h3>Observability</h3>
+    <ul class="handled">
+      <li><span class="prod cur">&#9679;</span><span><strong>Structured logging</strong> &mdash; Currently using Python <code>logging</code> with INFO/WARNING/ERROR levels. Each request logs order retrieval, per-image download status, and final counts.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Distributed tracing</strong> &mdash; Add OpenTelemetry spans for the order fetch and each image download. Would let you see exactly where time is spent in a batch call (upstream latency vs ZIP creation).</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Error tracking</strong> &mdash; Integrate Sentry or similar to capture unhandled exceptions with request context (order ID, image count, which image failed).</span></li>
+    </ul>
+
+    <h3>Metrics</h3>
+    <ul class="handled">
+      <li><span class="prod next">&#9675;</span><span><strong>Request latency</strong> &mdash; P50/P95/P99 for the batch endpoint. Latency correlates with image count, so track per-image latency too.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Success/failure rates</strong> &mdash; Track full success, partial success, and total failure rates. Alert if partial failures spike (could indicate Autoenhance processing delays).</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Upstream dependency health</strong> &mdash; Track Autoenhance API response times and error rates separately. If their API degrades, we need to know before our users report it.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>ZIP size distribution</strong> &mdash; Monitor payload sizes to catch memory pressure early and inform when to switch to streaming.</span></li>
+    </ul>
+
+    <h3>Versioning</h3>
+    <ul class="handled">
+      <li><span class="prod cur">&#9679;</span><span><strong>Autoenhance API</strong> &mdash; We're pinned to <code>/v3</code>. If they release v4, our endpoint keeps working until we explicitly migrate.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Our own API</strong> &mdash; Currently unversioned (<code>/orders/{id}/images</code>). For production, prefix with <code>/v1/</code> so we can evolve the response format (e.g. add metadata JSON alongside the ZIP) without breaking existing callers.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Dependency pinning</strong> &mdash; <code>requirements.txt</code> pins exact versions. Add a lockfile or use <code>pip-tools</code> for reproducible builds with transitive deps.</span></li>
+    </ul>
+
+    <h3>Security</h3>
+    <ul class="handled">
+      <li><span class="prod cur">&#9679;</span><span><strong>API key isolation</strong> &mdash; Key is in env var, never committed. <code>.gitignore</code> excludes <code>.env</code>.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Input validation</strong> &mdash; Order ID is passed directly to Autoenhance. Add UUID format validation to reject garbage early before making upstream calls.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Rate limiting our endpoint</strong> &mdash; No rate limiting on our batch endpoint currently. A single caller could trigger many upstream API calls. Add per-IP or token-based throttling.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Authentication</strong> &mdash; Our endpoint is public. For production, add API key or OAuth to control who can trigger batch downloads (and consume Autoenhance credits).</span></li>
+    </ul>
+
+    <h3>Testing</h3>
+    <ul class="handled">
+      <li><span class="prod cur">&#9679;</span><span><strong>Manual E2E</strong> &mdash; Tested with a real order (3 images) against the live Autoenhance API, both locally and on Render.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Unit tests</strong> &mdash; Mock the Autoenhance API with <code>httpx</code> transport mocks. Test partial failures, empty orders, invalid IDs, all formats.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Integration tests</strong> &mdash; Use <code>x-dev-mode</code> header to run real API calls without consuming credits. Assert ZIP contents and structure.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Load testing</strong> &mdash; Understand how the endpoint behaves with large orders (50+ images) and concurrent callers. Identify memory and timeout boundaries.</span></li>
+    </ul>
+
+    <h3>Operational</h3>
+    <ul class="handled">
+      <li><span class="prod cur">&#9679;</span><span><strong>Health check</strong> &mdash; <code>/health</code> endpoint reports status and API key configuration. Used by UptimeRobot for uptime monitoring.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Graceful degradation</strong> &mdash; If Autoenhance is down, return a clear 503 with retry-after instead of timing out. Could add circuit breaker pattern.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Caching</strong> &mdash; Enhanced images are immutable once processed. Cache them by image ID + format + quality to avoid redundant downloads on repeat requests.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>CI/CD</strong> &mdash; Currently auto-deploys from <code>main</code> via Render. Add a test stage (run unit tests before deploy) and staging environment.</span></li>
     </ul>
   </details>
 </div>
