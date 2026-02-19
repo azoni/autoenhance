@@ -375,6 +375,32 @@ async def ui():
   .test-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0; }
   .test-item { padding: 8px 12px; background: #f8f8ff; border-radius: 6px; font-size: 0.76rem; color: #4f5c65; display: flex; align-items: center; gap: 6px; }
   .test-item .pass { color: #3bd8be; font-weight: 700; }
+  /* Sentry dashboard */
+  .sentry-dash { margin-top: 16px; }
+  .sentry-actions { display: flex; gap: 10px; margin-bottom: 14px; }
+  .sentry-actions button { padding: 8px 16px; border-radius: 6px; font-size: 0.78rem; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; }
+  .sentry-actions .test-btn { background: #fee2e2; color: #991b1b; }
+  .sentry-actions .test-btn:hover { background: #fecaca; }
+  .sentry-actions .refresh-btn { background: #e5f1fb; color: #222173; }
+  .sentry-actions .refresh-btn:hover { background: #d0e4f5; }
+  .sentry-actions .link-btn { background: linear-gradient(135deg, rgba(59,216,190,0.15), rgba(119,191,246,0.15)); color: #222173; text-decoration: none; display: inline-flex; align-items: center; padding: 8px 16px; border-radius: 6px; font-size: 0.78rem; font-weight: 600; }
+  .sentry-actions .link-btn:hover { opacity: 0.8; }
+  .issue-list { list-style: none; padding: 0; }
+  .issue-item { padding: 10px 14px; border-radius: 8px; background: #f8f8ff; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+  .issue-item .issue-main { flex: 1; min-width: 0; }
+  .issue-item .issue-title { font-size: 0.8rem; font-weight: 600; color: #991b1b; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .issue-item .issue-title a { color: inherit; text-decoration: none; }
+  .issue-item .issue-title a:hover { text-decoration: underline; }
+  .issue-item .issue-culprit { font-size: 0.72rem; color: #6c7086; }
+  .issue-item .issue-meta { text-align: right; flex-shrink: 0; }
+  .issue-item .issue-count { font-size: 0.85rem; font-weight: 700; color: #222173; }
+  .issue-item .issue-time { font-size: 0.68rem; color: #a0a8b4; }
+  .issue-level { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; flex-shrink: 0; margin-top: 4px; }
+  .issue-level.error { background: #ef4444; }
+  .issue-level.warning { background: #f59e0b; }
+  .issue-level.info { background: #3b82f6; }
+  .sentry-empty { text-align: center; padding: 20px; color: #a0a8b4; font-size: 0.82rem; }
+  .sentry-status { font-size: 0.75rem; color: #a0a8b4; margin-top: 8px; text-align: right; }
 </style>
 </head>
 <body>
@@ -584,6 +610,20 @@ monkeypatch.setattr(httpx, <span class="str">"AsyncClient"</span>, make_mock_cli
     )</pre>
   <div class="note">The FastAPI integration is automatic &mdash; Sentry captures unhandled exceptions with full request context (URL, headers, order ID). Traces sample at 20% to keep costs low. Zero impact when <code>SENTRY_DSN</code> is unset.</div>
 
+  <div class="sentry-dash">
+    <h3>Live Error Dashboard <span class="pill done">LIVE</span></h3>
+    <div class="sentry-actions">
+      <button class="test-btn" onclick="triggerSentryTest()">Trigger Test Error</button>
+      <button class="refresh-btn" onclick="loadSentryIssues()">Refresh</button>
+      <a class="link-btn" href="https://azoni.sentry.io/issues/?project=4510914036826112" target="_blank">Open Sentry &rarr;</a>
+    </div>
+    <div id="sentry-test-status" style="display:none; font-size:0.78rem; padding:8px 12px; border-radius:6px; margin-bottom:10px;"></div>
+    <ul class="issue-list" id="sentry-issues">
+      <li class="sentry-empty">Loading issues...</li>
+    </ul>
+    <div class="sentry-status" id="sentry-status"></div>
+  </div>
+
   <h3>Circuit Breaker Pattern <span class="pill new">NEXT STEP</span></h3>
   <p class="file-ref">How it would integrate into app.py</p>
   <pre><span class="kw">class</span> <span class="fn">CircuitBreaker</span>:
@@ -726,6 +766,78 @@ function switchTab(tab) {
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   document.getElementById('tab-' + tab).classList.add('active');
   event.target.classList.add('active');
+  if (tab === 'production' && !window._sentryLoaded) {
+    window._sentryLoaded = true;
+    loadSentryIssues();
+  }
+}
+
+async function loadSentryIssues() {
+  const list = document.getElementById('sentry-issues');
+  const statusEl = document.getElementById('sentry-status');
+  list.innerHTML = '<li class="sentry-empty">Loading...</li>';
+  try {
+    const resp = await fetch('/api/sentry/issues');
+    const data = await resp.json();
+    if (data.error) {
+      list.innerHTML = '<li class="sentry-empty">' + data.error + '</li>';
+      return;
+    }
+    if (!data.issues.length) {
+      list.innerHTML = '<li class="sentry-empty">No issues yet &mdash; your app is clean!</li>';
+      statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString();
+      return;
+    }
+    list.innerHTML = data.issues.map(i => {
+      const level = i.level || 'error';
+      const ago = timeAgo(i.lastSeen);
+      return '<li class="issue-item">' +
+        '<span class="issue-level ' + level + '"></span>' +
+        '<div class="issue-main">' +
+          '<div class="issue-title"><a href="' + (i.permalink || '#') + '" target="_blank">' + escHtml(i.title) + '</a></div>' +
+          '<div class="issue-culprit">' + escHtml(i.culprit || '') + '</div>' +
+        '</div>' +
+        '<div class="issue-meta">' +
+          '<div class="issue-count">' + i.count + 'x</div>' +
+          '<div class="issue-time">' + ago + '</div>' +
+        '</div></li>';
+    }).join('');
+    statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    list.innerHTML = '<li class="sentry-empty">Failed to load: ' + e.message + '</li>';
+  }
+}
+
+async function triggerSentryTest() {
+  const s = document.getElementById('sentry-test-status');
+  s.style.display = 'block';
+  s.style.background = '#fef2f2';
+  s.style.border = '1px solid #fecaca';
+  s.style.color = '#991b1b';
+  s.textContent = 'Triggering test error...';
+  try {
+    await fetch('/sentry-debug');
+  } catch(e) {}
+  s.textContent = 'Test error sent to Sentry! Refresh in a few seconds to see it below.';
+  s.style.background = '#ecfdf5';
+  s.style.border = '1px solid #a7f3d0';
+  s.style.color = '#166534';
+  setTimeout(() => loadSentryIssues(), 4000);
+}
+
+function timeAgo(dateStr) {
+  if (!dateStr) return '';
+  const diff = (Date.now() - new Date(dateStr).getTime()) / 1000;
+  if (diff < 60) return Math.floor(diff) + 's ago';
+  if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+  return Math.floor(diff/86400) + 'd ago';
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
 }
 </script>
 </body>
@@ -750,3 +862,42 @@ async def health_check():
 async def trigger_error():
     """Trigger a test error to verify Sentry integration."""
     division_by_zero = 1 / 0
+
+
+@app.get("/api/sentry/issues", include_in_schema=False)
+async def sentry_issues():
+    """Proxy to Sentry API — returns recent issues for the project."""
+    token = os.getenv("SENTRY_AUTH_TOKEN")
+    org = os.getenv("SENTRY_ORG")
+    project = os.getenv("SENTRY_PROJECT")
+    if not all([token, org, project]):
+        return {"issues": [], "error": "Sentry API not configured"}
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.get(
+                f"https://sentry.io/api/0/projects/{org}/{project}/issues/",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"query": "", "limit": 10, "sort": "date"},
+            )
+            if resp.status_code != 200:
+                return {"issues": [], "error": f"Sentry API returned {resp.status_code}"}
+            issues = resp.json()
+            return {
+                "issues": [
+                    {
+                        "id": i.get("id"),
+                        "title": i.get("title"),
+                        "culprit": i.get("culprit"),
+                        "count": i.get("count"),
+                        "firstSeen": i.get("firstSeen"),
+                        "lastSeen": i.get("lastSeen"),
+                        "level": i.get("level"),
+                        "status": i.get("status"),
+                        "permalink": i.get("permalink"),
+                    }
+                    for i in issues
+                ]
+            }
+        except Exception as e:
+            return {"issues": [], "error": str(e)}
