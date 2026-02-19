@@ -227,4 +227,4 @@ class TestHealthAndUI:
         resp = client.get("/")
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
-        assert "Batch Image Downloader" in resp.text
+        assert "The Endpoint" in resp.text

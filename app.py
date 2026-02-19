@@ -617,13 +617,23 @@ async def ui():
 <div class="tabs">
   <button class="tab-btn active" onclick="switchTab('interview')">Interview Submission</button>
   <button class="tab-btn" onclick="switchTab('production')">Production Version</button>
-  <button class="tab-btn" onclick="switchTab('chat')">Ask Azoni AI</button>
+  <button class="tab-btn" onclick="switchTab('chat')">Ask About This Project</button>
 </div>
 <main>
 <div class="tab-panel active" id="tab-interview">
+<div class="info-panel" style="margin-top:20px;margin-bottom:-8px;">
+  <h2 style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">The Endpoint <a href="/docs" style="font-size:0.7rem;font-weight:600;color:#3bd8be;text-decoration:none;margin-left:auto;">OpenAPI Docs &rarr;</a></h2>
+  <pre style="background:#1e1e2e;color:#cdd6f4;padding:14px 18px;border-radius:8px;font-size:0.82rem;line-height:1.7;overflow-x:auto;margin:0 0 10px 0;"><span style="color:#cba6f7;">GET</span> /orders/<span style="color:#f9e2af;">{order_id}</span>/images<span style="color:#6c7086;">?format=jpeg&amp;quality=80&amp;preview=true&amp;dev_mode=true</span></pre>
+  <p style="font-size:0.78rem;color:#4f5c65;line-height:1.5;margin-bottom:10px;">Returns a ZIP archive containing all enhanced images for the given order. Params: <code style="background:#e5e7f0;padding:1px 5px;border-radius:3px;font-size:0.75rem;">format</code> (jpeg/png/webp), <code style="background:#e5e7f0;padding:1px 5px;border-radius:3px;font-size:0.75rem;">quality</code> (1-90), <code style="background:#e5e7f0;padding:1px 5px;border-radius:3px;font-size:0.75rem;">preview</code>, <code style="background:#e5e7f0;padding:1px 5px;border-radius:3px;font-size:0.75rem;">dev_mode</code>.</p>
+  <details>
+    <summary style="font-size:0.78rem;font-weight:600;color:#222173;cursor:pointer;">curl example</summary>
+    <pre style="background:#1e1e2e;color:#cdd6f4;padding:12px 16px;border-radius:8px;font-size:0.75rem;line-height:1.6;overflow-x:auto;margin:8px 0 0 0;">curl <span style="color:#a6e3a1;">"https://autoenhance.onrender.com/orders/{order_id}/images?dev_mode=true"</span> \
+  -o images.zip</pre>
+  </details>
+</div>
 <div class="card">
-  <h1>Batch Image Downloader</h1>
-  <p class="sub">Download all enhanced images for an order as a ZIP</p>
+  <h1>Try It</h1>
+  <p class="sub">Test the batch endpoint with a real order</p>
   <details id="create-section" class="create-order">
     <summary>Need a test order? Try it here</summary>
     <div class="create-body">
