@@ -18,12 +18,21 @@ import zipfile
 from typing import Literal, Optional
 
 import httpx
+import sentry_sdk
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pathlib import Path
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
+
+# Sentry error tracking — only active when DSN is configured
+if os.getenv("SENTRY_DSN"):
+    sentry_sdk.init(
+        dsn=os.getenv("SENTRY_DSN"),
+        traces_sample_rate=0.2,
+        environment=os.getenv("SENTRY_ENV", "production"),
+    )
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -470,7 +479,7 @@ async def ui():
     <ul class="handled">
       <li><span class="prod cur">&#9679;</span><span><strong>Structured logging</strong> &mdash; Currently using Python <code>logging</code> with INFO/WARNING/ERROR levels. Each request logs order retrieval, per-image download status, and final counts.</span></li>
       <li><span class="prod next">&#9675;</span><span><strong>Distributed tracing</strong> &mdash; Add OpenTelemetry spans for the order fetch and each image download. Would let you see exactly where time is spent in a batch call (upstream latency vs ZIP creation).</span></li>
-      <li><span class="prod next">&#9675;</span><span><strong>Error tracking</strong> &mdash; Integrate Sentry or similar to capture unhandled exceptions with request context (order ID, image count, which image failed).</span></li>
+      <li><span class="prod cur">&#9679;</span><span><strong>Error tracking</strong> &mdash; Sentry SDK integrated. Captures unhandled exceptions with request context. Activated via <code>SENTRY_DSN</code> env var (no-op when unset).</span></li>
     </ul>
 
     <h3>Metrics</h3>
@@ -561,6 +570,19 @@ uuid_pattern = re.compile(
 <span class="cmt"># monkeypatch replaces httpx.AsyncClient per-test</span>
 monkeypatch.setattr(httpx, <span class="str">"AsyncClient"</span>, make_mock_client(...))</pre>
   <div class="note">Tests use <code>httpx.MockTransport</code> to intercept all outgoing HTTP &mdash; no real API calls, no credits consumed. Each test configures its own mock responses for isolation.</div>
+
+  <h3>Sentry Error Tracking <span class="pill done">IMPLEMENTED</span></h3>
+  <p class="file-ref">app.py &mdash; startup config</p>
+  <pre><span class="kw">import</span> sentry_sdk
+
+<span class="cmt"># Only active when DSN is configured (no-op otherwise)</span>
+<span class="kw">if</span> os.getenv(<span class="str">"SENTRY_DSN"</span>):
+    sentry_sdk.init(
+        dsn=os.getenv(<span class="str">"SENTRY_DSN"</span>),
+        traces_sample_rate=<span class="num">0.2</span>,
+        environment=os.getenv(<span class="str">"SENTRY_ENV"</span>, <span class="str">"production"</span>),
+    )</pre>
+  <div class="note">The FastAPI integration is automatic &mdash; Sentry captures unhandled exceptions with full request context (URL, headers, order ID). Traces sample at 20% to keep costs low. Zero impact when <code>SENTRY_DSN</code> is unset.</div>
 
   <h3>Circuit Breaker Pattern <span class="pill new">NEXT STEP</span></h3>
   <p class="file-ref">How it would integrate into app.py</p>

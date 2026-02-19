@@ -7,3 +7,5 @@ services:
     envVars:
       - key: AUTOENHANCE_API_KEY
         sync: false
+      - key: SENTRY_DSN
+        sync: false
