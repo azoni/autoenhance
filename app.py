@@ -299,6 +299,7 @@ async def ui():
   .handled li { font-size: 0.8rem; color: #4f5c65; padding: 6px 0; border-bottom: 1px solid #f0f0f5; display: flex; gap: 8px; align-items: baseline; }
   .handled li:last-child { border-bottom: none; }
   .handled .check { color: #3bd8be; font-weight: 700; flex-shrink: 0; }
+  .handled .assume { color: #e09f3e; font-weight: 700; flex-shrink: 0; font-size: 0.9rem; }
   details summary { cursor: pointer; font-size: 0.85rem; font-weight: 600; color: #222173; padding: 4px 0; }
   details summary:hover { color: #3bd8be; }
   details[open] summary { margin-bottom: 12px; }
@@ -392,6 +393,26 @@ async def ui():
       <li><span class="check">&#10003;</span><span><strong>Response format</strong> &mdash; ZIP archive chosen over multipart (poor client support) or base64 JSON (33% overhead). Universally supported and compresses well.</span></li>
       <li><span class="check">&#10003;</span><span><strong>Redirects</strong> &mdash; Autoenhance returns 302 &rarr; asset server &rarr; S3. The HTTP client follows redirects transparently.</span></li>
       <li><span class="check">&#10003;</span><span><strong>Memory</strong> &mdash; Images are buffered in-memory before ZIP creation. Suitable for typical orders (&lt;50 images). For very large orders, streaming ZIP or an async job pattern would be the next step.</span></li>
+    </ul>
+  </details>
+</div>
+<div class="info-panel">
+  <details>
+    <summary>Assumptions &amp; open questions</summary>
+
+    <ul class="handled">
+      <li><span class="assume">?</span><span><strong>We don't control the upload pipeline</strong> &mdash; This endpoint assumes images have already been uploaded and enhanced via Autoenhance. We accept an <code>order_id</code> after the fact, meaning we're downstream of whatever upload flow the client uses (web app, SDK, direct API).</span></li>
+      <li><span class="assume">?</span><span><strong>Enhancement timing is unknown</strong> &mdash; We don't know when processing completes after upload. Images could still be enhancing when the batch endpoint is called. We handle this gracefully (partial success + failure report) but have no way to trigger or wait for processing.</span></li>
+      <li><span class="assume">?</span><span><strong>Order contents are opaque</strong> &mdash; The full schema of the <code>images</code> array in the order response isn't fully documented. We check for both <code>image_id</code>/<code>id</code> and <code>image_name</code>/<code>name</code> to be resilient to field name variations.</span></li>
+      <li><span class="assume">?</span><span><strong>No webhook/callback for completion</strong> &mdash; Ideally Autoenhance would notify us when all images in an order are processed. Without that, the caller must poll or wait before requesting the batch download.</span></li>
+      <li><span class="assume">?</span><span><strong>Rate limits undocumented</strong> &mdash; We throttle to 5 concurrent downloads as a safe default, but the actual Autoenhance rate limit isn't published. This could be tuned with production data.</span></li>
+    </ul>
+
+    <h3>Possible extensions</h3>
+    <ul class="handled">
+      <li><span class="check">&#8594;</span><span><strong>Poll-until-ready</strong> &mdash; Add a <code>wait=true</code> param that checks image statuses and retries until all are processed before downloading.</span></li>
+      <li><span class="check">&#8594;</span><span><strong>Async job pattern</strong> &mdash; For large orders: <code>POST /jobs</code> starts the download, returns a job ID; <code>GET /jobs/{id}</code> returns status or the ZIP when ready.</span></li>
+      <li><span class="check">&#8594;</span><span><strong>Webhook integration</strong> &mdash; If Autoenhance supports completion webhooks, trigger the batch download automatically when an order finishes processing.</span></li>
     </ul>
   </details>
 </div>
