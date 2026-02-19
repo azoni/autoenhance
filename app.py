@@ -741,24 +741,6 @@ async def ui():
     </ul>
   </details>
 </div>
-<div class="info-panel">
-  <details>
-    <summary>Live error tracking &mdash; Sentry</summary>
-    <p style="font-size:0.8rem;color:#4f5c65;margin-bottom:14px;">Sentry SDK captures unhandled exceptions with full request context. Try triggering a test error to see it appear below.</p>
-    <div class="sentry-dash">
-      <div class="sentry-actions">
-        <button class="test-btn" onclick="triggerSentryTest()">Trigger Test Error</button>
-        <button class="refresh-btn" onclick="loadSentryIssues()">Refresh</button>
-        <a class="link-btn" href="https://azoni.sentry.io/issues/?project=4510914036826112" target="_blank">Open Sentry &rarr;</a>
-      </div>
-      <div id="sentry-test-status" style="display:none; font-size:0.78rem; padding:8px 12px; border-radius:6px; margin-bottom:10px;"></div>
-      <ul class="issue-list" id="sentry-issues">
-        <li class="sentry-empty">Click Refresh to load issues</li>
-      </ul>
-      <div class="sentry-status" id="sentry-status"></div>
-    </div>
-  </details>
-</div>
 </div><!-- /tab-interview -->
 
 <div class="tab-panel" id="tab-production">
@@ -821,7 +803,19 @@ monkeypatch.setattr(httpx, <span class="str">"AsyncClient"</span>, make_mock_cli
     )</pre>
   <div class="note">FastAPI integration is automatic &mdash; Sentry captures unhandled exceptions with full request context. 20% trace sampling keeps costs low. No-op when <code>SENTRY_DSN</code> is unset.</div>
 
-  <div class="note">Live error dashboard is on the Interview tab &mdash; click <strong>Trigger Test Error</strong> there to see it in action.</div>
+  <div class="sentry-dash">
+    <h3>Live Error Dashboard <span class="pill done">LIVE</span></h3>
+    <div class="sentry-actions">
+      <button class="test-btn" onclick="triggerSentryTest()">Trigger Test Error</button>
+      <button class="refresh-btn" onclick="loadSentryIssues()">Refresh</button>
+      <a class="link-btn" href="https://azoni.sentry.io/issues/?project=4510914036826112" target="_blank">Open Sentry &rarr;</a>
+    </div>
+    <div id="sentry-test-status" style="display:none; font-size:0.78rem; padding:8px 12px; border-radius:6px; margin-bottom:10px;"></div>
+    <ul class="issue-list" id="sentry-issues">
+      <li class="sentry-empty">Loading issues...</li>
+    </ul>
+    <div class="sentry-status" id="sentry-status"></div>
+  </div>
 
   <h3>Circuit Breaker Pattern <span class="pill new">NEXT STEP</span></h3>
   <p class="file-ref">How it would integrate into app.py</p>
@@ -1028,6 +1022,10 @@ function switchTab(tab) {
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   document.getElementById('tab-' + tab).classList.add('active');
   event.target.classList.add('active');
+  if (tab === 'production' && !window._sentryLoaded) {
+    window._sentryLoaded = true;
+    loadSentryIssues();
+  }
 }
 
 async function loadSentryIssues() {
