@@ -617,7 +617,7 @@ async def ui():
 <div class="tabs">
   <button class="tab-btn active" onclick="switchTab('interview')">Interview Submission</button>
   <button class="tab-btn" onclick="switchTab('production')">Production Version</button>
-  <button class="tab-btn" onclick="switchTab('chat')">Ask About This Project</button>
+  <button class="tab-btn" onclick="switchTab('chat')">Questions?</button>
 </div>
 <main>
 <div class="tab-panel active" id="tab-interview">
