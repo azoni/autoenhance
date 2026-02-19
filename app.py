@@ -15,12 +15,12 @@ import logging
 import os
 import re
 import zipfile
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 import httpx
 import sentry_sdk
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pathlib import Path
 
@@ -283,6 +283,84 @@ async def batch_download_order_images(
         )
 
 
+@app.post("/api/create-order", include_in_schema=False)
+async def create_test_order(files: List[UploadFile] = File(...)):
+    """Upload images to Autoenhance and create a new order for testing."""
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided.")
+
+    api_key = _get_api_key()
+    headers = {"x-api-key": api_key, "Content-Type": "application/json"}
+
+    content_type_map = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+    }
+
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+        # 1. Create order
+        order_resp = await client.post(
+            f"{API_BASE}/orders",
+            headers=headers,
+            json={"name": f"Test Order ({len(files)} images)"},
+        )
+        if order_resp.status_code not in (200, 201):
+            raise HTTPException(
+                status_code=order_resp.status_code,
+                detail=f"Failed to create order: {order_resp.text}",
+            )
+
+        order_data = order_resp.json()
+        order_id = order_data["order_id"]
+        logger.info("Created order %s", order_id)
+
+        # 2. Register and upload each image
+        uploaded = []
+        for file in files:
+            content = await file.read()
+            ext = os.path.splitext(file.filename or "image.jpg")[1].lower()
+            content_type = content_type_map.get(ext, "image/jpeg")
+            image_name = os.path.splitext(file.filename or "image")[0]
+
+            # Register image with Autoenhance
+            reg_resp = await client.post(
+                f"{API_BASE}/images/",
+                headers=headers,
+                json={
+                    "image_name": image_name,
+                    "order_id": order_id,
+                    "contentType": content_type,
+                },
+            )
+            if reg_resp.status_code not in (200, 201):
+                logger.warning("Failed to register %s: %s", image_name, reg_resp.text)
+                continue
+
+            reg_data = reg_resp.json()
+            upload_url = reg_data.get("s3PutObjectUrl") or reg_data.get("upload_url")
+            image_id = reg_data.get("image_id")
+
+            # Upload binary to presigned S3 URL
+            put_resp = await client.put(
+                upload_url,
+                content=content,
+                headers={"Content-Type": content_type},
+            )
+            if put_resp.status_code in (200, 201):
+                uploaded.append({"image_id": image_id, "name": image_name})
+                logger.info("Uploaded %s (%s)", image_name, image_id)
+            else:
+                logger.warning("S3 upload failed for %s: %d", image_name, put_resp.status_code)
+
+    return {
+        "order_id": order_id,
+        "images_uploaded": len(uploaded),
+        "images": uploaded,
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 async def ui():
     """Simple web UI for testing the batch download endpoint."""
@@ -345,6 +423,21 @@ async def ui():
   #status.info { display: block; background: #e5f1fb; border: 1px solid #b8d4ec; color: #4f5c65; }
   #status.ok { display: block; background: #ecfdf5; border: 1px solid #a7f3d0; color: #166534; }
   #status.err { display: block; background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+  /* Create test order */
+  .create-order { margin-bottom: 24px; padding: 14px 16px; background: #f8f8ff; border-radius: 8px; border: 1px dashed #d0d5dd; }
+  .create-order summary { cursor: pointer; font-size: 0.82rem; font-weight: 600; color: #4f5c65; }
+  .create-order summary:hover { color: #222173; }
+  .create-order[open] summary { margin-bottom: 12px; }
+  .create-body { display: flex; flex-direction: column; gap: 10px; }
+  .create-hint { font-size: 0.78rem; color: #6c7086; line-height: 1.5; }
+  .create-body input[type="file"] { font-size: 0.85rem; color: #4f5c65; }
+  .create-body button { background: #222173; color: #fff; font-size: 0.85rem; padding: 10px; border-radius: 8px; border: none; cursor: pointer; font-weight: 600; transition: opacity 0.2s; }
+  .create-body button:hover { opacity: 0.85; }
+  .create-body button:disabled { background: #d0d5dd; color: #a0a8b4; cursor: not-allowed; }
+  #create-status { display: none; font-size: 0.82rem; padding: 10px 12px; border-radius: 6px; line-height: 1.5; }
+  #create-status.info { display: block; background: #e5f1fb; border: 1px solid #b8d4ec; color: #4f5c65; }
+  #create-status.ok { display: block; background: #ecfdf5; border: 1px solid #a7f3d0; color: #166534; }
+  #create-status.err { display: block; background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
   .footer { padding: 20px; text-align: center; font-size: 0.75rem; color: #a0a8b4; }
   .footer a { color: #3bd8be; text-decoration: none; }
   .footer a:hover { text-decoration: underline; }
@@ -422,6 +515,15 @@ async def ui():
 <div class="card">
   <h1>Batch Image Downloader</h1>
   <p class="sub">Download all enhanced images for an order as a ZIP archive</p>
+  <details id="create-section" class="create-order">
+    <summary>Need a test order? Upload images here</summary>
+    <div class="create-body">
+      <p class="create-hint">Select one or more images (.jpg, .png, .webp). They'll be uploaded to Autoenhance and grouped into a new order. Wait ~60 seconds for processing before downloading.</p>
+      <input type="file" id="upload_files" multiple accept=".jpg,.jpeg,.png,.webp">
+      <button type="button" id="create-btn" onclick="createTestOrder()">Create Order &amp; Upload</button>
+      <div id="create-status"></div>
+    </div>
+  </details>
   <form id="form">
     <label for="order_id">Order ID</label>
     <input type="text" id="order_id" placeholder="e.g. 100aefc4-8664-4180-9a97-42f428c6aace" required>
@@ -761,6 +863,39 @@ form.addEventListener('submit', async (e) => {
   }
 });
 
+async function createTestOrder() {
+  const fileInput = document.getElementById('upload_files');
+  const files = fileInput.files;
+  if (!files.length) { alert('Select at least one image'); return; }
+
+  const createBtn = document.getElementById('create-btn');
+  const cs = document.getElementById('create-status');
+  createBtn.disabled = true;
+  createBtn.textContent = 'Uploading...';
+  cs.className = 'info';
+  cs.textContent = 'Uploading ' + files.length + ' image(s) to Autoenhance...';
+
+  const formData = new FormData();
+  for (const f of files) formData.append('files', f);
+
+  try {
+    const resp = await fetch('/api/create-order', { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'HTTP ' + resp.status);
+
+    document.getElementById('order_id').value = data.order_id;
+    cs.className = 'ok';
+    cs.innerHTML = 'Order created: <strong>' + data.order_id + '</strong><br>' +
+      data.images_uploaded + ' image(s) uploaded. Wait ~60s for processing, then click Download ZIP.';
+  } catch (err) {
+    cs.className = 'err';
+    cs.textContent = err.message;
+  } finally {
+    createBtn.disabled = false;
+    createBtn.textContent = 'Create Order & Upload';
+  }
+}
+
 function switchTab(tab) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
@@ -849,7 +984,7 @@ async def favicon():
     return FileResponse(Path(__file__).resolve().parent / "favicon.ico", media_type="image/x-icon")
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 async def health_check():
     """Health check — also indicates whether the API key is configured."""
     return {
