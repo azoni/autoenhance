@@ -56,4 +56,14 @@ Technical test — build a batch endpoint to download all images for an order.
 
 **Possible extensions noted:** poll-until-ready mode, async job pattern for large orders, webhook-triggered downloads.
 
+**Production considerations documented on-page:**
+- Observability: have structured logging, would add OpenTelemetry tracing + Sentry.
+- Metrics: latency percentiles, success/failure rates, upstream health, ZIP size distribution.
+- Versioning: pinned to Autoenhance `/v3`; our own API unversioned — would add `/v1/` prefix.
+- Security: API key isolated in env; would add UUID input validation, rate limiting, auth on our endpoint.
+- Testing: manual E2E done; would add unit tests (mocked), integration tests (dev-mode), load tests.
+- Operational: health check exists; would add caching (images are immutable), circuit breaker, CI/CD pipeline.
+
+Each item marked as "done" (teal) or "next step" (gray) on the live page.
+
 **Live URL:** https://autoenhance.onrender.com
