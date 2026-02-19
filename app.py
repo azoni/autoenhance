@@ -583,6 +583,25 @@ async def ui():
   .issue-level.info { background: #3b82f6; }
   .sentry-empty { text-align: center; padding: 20px; color: #a0a8b4; font-size: 0.82rem; }
   .sentry-status { font-size: 0.75rem; color: #a0a8b4; margin-top: 8px; text-align: right; }
+  /* Azoni Chat Tab */
+  .chat-container { background: #fff; border-radius: 12px; width: 100%; max-width: 500px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -2px rgba(0,0,0,0.06); margin-top: 20px; display: flex; flex-direction: column; height: 600px; }
+  .chat-head { padding: 20px 24px 16px; border-bottom: 1px solid #f0f0f5; }
+  .chat-head h2 { font-size: 1.15rem; font-weight: 700; color: #222173; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
+  .chat-head .ai-badge { background: linear-gradient(135deg, #3bd8be, #77bff6); color: #222173; font-size: 0.65rem; font-weight: 700; padding: 2px 8px; border-radius: 9999px; }
+  .chat-head p { font-size: 0.82rem; color: #4f5c65; line-height: 1.4; }
+  .chat-messages { flex: 1; overflow-y: auto; padding: 16px 24px; display: flex; flex-direction: column; gap: 12px; }
+  .chat-msg { max-width: 85%; padding: 10px 14px; border-radius: 12px; font-size: 0.85rem; line-height: 1.5; word-wrap: break-word; }
+  .chat-msg.user { align-self: flex-end; background: linear-gradient(135deg, #222173, #2d2b8a); color: #fff; border-bottom-right-radius: 4px; }
+  .chat-msg.assistant { align-self: flex-start; background: #f5f6ff; color: #222173; border-bottom-left-radius: 4px; }
+  .chat-msg.assistant code { background: #e5e7f0; padding: 1px 5px; border-radius: 3px; font-size: 0.8rem; }
+  .chat-msg.err-msg { align-self: center; background: #fef2f2; color: #991b1b; font-size: 0.8rem; border: 1px solid #fecaca; }
+  .chat-typing { align-self: flex-start; color: #a0a8b4; font-size: 0.8rem; font-style: italic; padding: 4px 0; }
+  .chat-chips { padding: 12px 24px; display: flex; flex-wrap: wrap; gap: 6px; border-top: 1px solid #f0f0f5; }
+  .chat-chips button { padding: 6px 12px; border: 1px solid #d0d5dd; border-radius: 9999px; background: #fff; color: #4f5c65; font-size: 0.72rem; cursor: pointer; transition: all 0.2s; width: auto; font-weight: 500; }
+  .chat-chips button:hover { border-color: #3bd8be; color: #222173; background: rgba(59,216,190,0.05); }
+  .chat-input-row { padding: 12px 16px; border-top: 1px solid #f0f0f5; display: flex; gap: 8px; }
+  .chat-input-row input { flex: 1; margin-bottom: 0; padding: 10px 14px; font-size: 0.9rem; }
+  .chat-input-row button { width: auto; padding: 10px 20px; font-size: 0.85rem; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -598,6 +617,7 @@ async def ui():
 <div class="tabs">
   <button class="tab-btn active" onclick="switchTab('interview')">Interview Submission</button>
   <button class="tab-btn" onclick="switchTab('production')">Production Version</button>
+  <button class="tab-btn" onclick="switchTab('chat')">Ask Azoni AI</button>
 </div>
 <main>
 <div class="tab-panel active" id="tab-interview">
@@ -900,6 +920,30 @@ limiter = Limiter(key_func=get_remote_address)
 </div>
 </div><!-- /tab-production -->
 
+<div class="tab-panel" id="tab-chat">
+<div class="chat-container">
+  <div class="chat-head">
+    <h2>Azoni AI <span class="ai-badge">CHATBOT</span></h2>
+    <p>Ask me anything about this batch endpoint, the design decisions, or Charlton's background.</p>
+  </div>
+  <div class="chat-messages" id="chat-messages">
+    <div class="chat-msg assistant">Hi! I'm Azoni AI, Charlton's portfolio chatbot. I know all about this batch image downloader &mdash; the design decisions, error handling, tech stack, and more. Ask me anything!</div>
+  </div>
+  <div class="chat-chips" id="chat-chips">
+    <button onclick="askChip(this)">What does this batch endpoint do?</button>
+    <button onclick="askChip(this)">What design decisions were made?</button>
+    <button onclick="askChip(this)">How are errors handled?</button>
+    <button onclick="askChip(this)">What would you add for production?</button>
+    <button onclick="askChip(this)">Tell me about Charlton's background</button>
+    <button onclick="askChip(this)">Why did Charlton build it this way?</button>
+  </div>
+  <div class="chat-input-row">
+    <input type="text" id="chat-input" placeholder="Ask about the endpoint, design, or Charlton..." onkeydown="if(event.key==='Enter')sendChat()">
+    <button onclick="sendChat()" id="chat-send-btn">Send</button>
+  </div>
+</div>
+</div><!-- /tab-chat -->
+
 </main>
 <div class="footer">Batch endpoint for <a href="https://autoenhance.ai" target="_blank">autoenhance.ai</a> &mdash; <a href="/docs">API Docs</a></div>
 <script>
@@ -1094,6 +1138,93 @@ function escHtml(s) {
   const d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
+}
+
+// ===== Azoni AI Chat =====
+const AZONI_API = 'https://azoni.ai/.netlify/functions/chat';
+let chatHistory = [];
+
+function askChip(btn) {
+  document.getElementById('chat-input').value = btn.textContent;
+  sendChat();
+}
+
+async function sendChat() {
+  const input = document.getElementById('chat-input');
+  const msg = input.value.trim();
+  if (!msg) return;
+  input.value = '';
+
+  addChatMsg('user', msg);
+
+  const chips = document.getElementById('chat-chips');
+  if (chips) chips.style.display = 'none';
+
+  chatHistory.push({ role: 'user', content: msg });
+
+  const typing = document.createElement('div');
+  typing.className = 'chat-typing';
+  typing.id = 'chat-typing';
+  typing.textContent = 'Azoni AI is thinking\u2026';
+  document.getElementById('chat-messages').appendChild(typing);
+  scrollChatToBottom();
+
+  const sendBtn = document.getElementById('chat-send-btn');
+  sendBtn.disabled = true;
+
+  try {
+    const resp = await fetch(AZONI_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: chatHistory,
+        mode: 'professional',
+        model: 'openai/gpt-4o-mini',
+        context: 'autoenhance-interview'
+      })
+    });
+    const t = document.getElementById('chat-typing');
+    if (t) t.remove();
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.error || 'API error: ' + resp.status);
+    }
+
+    const data = await resp.json();
+    const reply = data.choices?.[0]?.message?.content || 'Sorry, I could not generate a response.';
+    chatHistory.push({ role: 'assistant', content: reply });
+    addChatMsg('assistant', reply);
+  } catch (err) {
+    const t = document.getElementById('chat-typing');
+    if (t) t.remove();
+    addChatMsg('err-msg', 'Failed to reach Azoni AI: ' + err.message);
+  } finally {
+    sendBtn.disabled = false;
+    input.focus();
+  }
+}
+
+function addChatMsg(role, content) {
+  const container = document.getElementById('chat-messages');
+  const div = document.createElement('div');
+  div.className = 'chat-msg ' + role;
+  if (role === 'assistant') {
+    let html = escHtml(content);
+    html = html.replace(/\\*\\*(.*?)\\*\\*/g, '<strong>$1</strong>');
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+    html = html.replace(/\\n/g, '<br>');
+    div.innerHTML = html;
+  } else {
+    div.textContent = content;
+  }
+  container.appendChild(div);
+  scrollChatToBottom();
+}
+
+function scrollChatToBottom() {
+  const c = document.getElementById('chat-messages');
+  c.scrollTop = c.scrollHeight;
 }
 </script>
 </body>
