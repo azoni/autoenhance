@@ -603,12 +603,12 @@ async def ui():
 <div class="tab-panel active" id="tab-interview">
 <div class="card">
   <h1>Batch Image Downloader</h1>
-  <p class="sub">Download all enhanced images for an order as a ZIP archive</p>
+  <p class="sub">Download all enhanced images for an order as a ZIP</p>
   <details id="create-section" class="create-order">
     <summary>Need a test order? Try it here</summary>
     <div class="create-body">
-      <button type="button" id="sample-btn" onclick="createSampleOrder()">One-Click Demo &mdash; Use Sample Images</button>
-      <p class="create-hint" style="text-align:center;color:#a0a8b4;font-size:0.72rem;">Creates an order with 3 bundled real-estate photos. No files needed.</p>
+      <button type="button" id="sample-btn" onclick="createSampleOrder()">Try Demo &mdash; Use Sample Images</button>
+      <p class="create-hint" style="text-align:center;color:#a0a8b4;font-size:0.72rem;">Uploads 3 bundled real-estate photos to Autoenhance. No files needed.</p>
       <div style="display:flex;align-items:center;gap:10px;margin:4px 0 2px 0;"><hr style="flex:1;border:none;border-top:1px solid #e0e0ea;"><span style="font-size:0.72rem;color:#a0a8b4;">or upload your own</span><hr style="flex:1;border:none;border-top:1px solid #e0e0ea;"></div>
       <input type="file" id="upload_files" multiple accept=".jpg,.jpeg,.png,.webp">
       <button type="button" id="create-btn" onclick="createTestOrder()">Upload &amp; Create Order</button>
@@ -642,31 +642,31 @@ async def ui():
 </div>
 <div class="info-panel">
   <details open>
-    <summary>How it works &mdash; Batch vs Normal endpoints</summary>
+    <summary>How it works &mdash; Batch vs standard endpoints</summary>
 
     <div class="compare">
       <div class="col left">
-        <strong>Normal endpoint</strong>
-        1 request &rarr; 1 resource<br>
+        <strong>Standard endpoint</strong>
+        1 request &rarr; 1 image<br>
         Fast, all-or-nothing<br>
-        Small payload, simple error handling
+        Small payload, simple errors
       </div>
       <div class="col right">
         <strong>Batch endpoint (this)</strong>
-        1 request &rarr; N resources<br>
-        Slower, partial success is valid<br>
-        Large payload, needs concurrency &amp; throttling
+        1 request &rarr; N images<br>
+        Partial success is valid<br>
+        Needs concurrency &amp; throttling
       </div>
     </div>
 
-    <h3>Challenges &amp; how each is handled</h3>
+    <h3>Design decisions</h3>
     <ul class="handled">
-      <li><span class="check">&#10003;</span><span><strong>Concurrency</strong> &mdash; Images download in parallel via <code>asyncio.gather</code> with a semaphore (max 5) to balance speed against API rate limits.</span></li>
-      <li><span class="check">&#10003;</span><span><strong>Partial failure</strong> &mdash; If some images fail (still processing, timeout), we return what succeeded + a <code>_download_report.txt</code> inside the ZIP.</span></li>
-      <li><span class="check">&#10003;</span><span><strong>Timeouts</strong> &mdash; Each image download has a 60s timeout. The overall request scales with order size; headers report total/downloaded/failed counts.</span></li>
-      <li><span class="check">&#10003;</span><span><strong>Response format</strong> &mdash; ZIP archive chosen over multipart (poor client support) or base64 JSON (33% overhead). Universally supported and compresses well.</span></li>
-      <li><span class="check">&#10003;</span><span><strong>Redirects</strong> &mdash; Autoenhance returns 302 &rarr; asset server &rarr; S3. The HTTP client follows redirects transparently.</span></li>
-      <li><span class="check">&#10003;</span><span><strong>Memory</strong> &mdash; Images are buffered in-memory before ZIP creation. Suitable for typical orders (&lt;50 images). For very large orders, streaming ZIP or an async job pattern would be the next step.</span></li>
+      <li><span class="check">&#10003;</span><span><strong>Concurrency</strong> &mdash; Downloads run in parallel via <code>asyncio.gather</code> with a semaphore (max 5) to balance speed vs. API rate limits.</span></li>
+      <li><span class="check">&#10003;</span><span><strong>Partial failure</strong> &mdash; If some images fail (still processing, timed out), the ZIP includes what succeeded plus a <code>_download_report.txt</code>.</span></li>
+      <li><span class="check">&#10003;</span><span><strong>Timeouts</strong> &mdash; 60s per image. Response headers report total / downloaded / failed counts.</span></li>
+      <li><span class="check">&#10003;</span><span><strong>Response format</strong> &mdash; ZIP chosen over multipart (poor client support) or base64 JSON (33% size overhead). Universal support, good compression.</span></li>
+      <li><span class="check">&#10003;</span><span><strong>Redirects</strong> &mdash; Autoenhance returns 302 &rarr; asset server &rarr; S3. The client follows these transparently.</span></li>
+      <li><span class="check">&#10003;</span><span><strong>Memory</strong> &mdash; Images buffer in-memory before ZIP creation. Fine for typical orders (&lt;50 images); larger orders would need streaming or an async job.</span></li>
     </ul>
   </details>
 </div>
@@ -675,18 +675,18 @@ async def ui():
     <summary>Assumptions &amp; open questions</summary>
 
     <ul class="handled">
-      <li><span class="assume">?</span><span><strong>We don't control the upload pipeline</strong> &mdash; This endpoint assumes images have already been uploaded and enhanced via Autoenhance. We accept an <code>order_id</code> after the fact, meaning we're downstream of whatever upload flow the client uses (web app, SDK, direct API).</span></li>
-      <li><span class="assume">?</span><span><strong>Enhancement timing is unknown</strong> &mdash; We don't know when processing completes after upload. Images could still be enhancing when the batch endpoint is called. We handle this gracefully (partial success + failure report) but have no way to trigger or wait for processing.</span></li>
-      <li><span class="assume">?</span><span><strong>Order contents are opaque</strong> &mdash; The full schema of the <code>images</code> array in the order response isn't fully documented. We check for both <code>image_id</code>/<code>id</code> and <code>image_name</code>/<code>name</code> to be resilient to field name variations.</span></li>
-      <li><span class="assume">?</span><span><strong>No webhook/callback for completion</strong> &mdash; Ideally Autoenhance would notify us when all images in an order are processed. Without that, the caller must poll or wait before requesting the batch download.</span></li>
-      <li><span class="assume">?</span><span><strong>Rate limits undocumented</strong> &mdash; We throttle to 5 concurrent downloads as a safe default, but the actual Autoenhance rate limit isn't published. This could be tuned with production data.</span></li>
+      <li><span class="assume">?</span><span><strong>Upload pipeline is external</strong> &mdash; This endpoint is downstream of whatever upload flow the client uses (web app, SDK, direct API). We accept an <code>order_id</code> after images are already uploaded and enhanced.</span></li>
+      <li><span class="assume">?</span><span><strong>Enhancement timing is unknown</strong> &mdash; Images may still be processing when the batch endpoint is called. Handled gracefully via partial success + failure report, but we can't trigger or wait for completion.</span></li>
+      <li><span class="assume">?</span><span><strong>Order schema is partially documented</strong> &mdash; We check for both <code>image_id</code>/<code>id</code> and <code>image_name</code>/<code>name</code> to handle field name variations in the API response.</span></li>
+      <li><span class="assume">?</span><span><strong>No completion webhook</strong> &mdash; Without a callback, the caller must wait or poll before requesting the batch download.</span></li>
+      <li><span class="assume">?</span><span><strong>Rate limits undocumented</strong> &mdash; We default to 5 concurrent downloads. The actual Autoenhance limit isn't published, so this can be tuned with production data.</span></li>
     </ul>
 
     <h3>Possible extensions</h3>
     <ul class="handled">
-      <li><span class="check">&#8594;</span><span><strong>Poll-until-ready</strong> &mdash; Add a <code>wait=true</code> param that checks image statuses and retries until all are processed before downloading.</span></li>
-      <li><span class="check">&#8594;</span><span><strong>Async job pattern</strong> &mdash; For large orders: <code>POST /jobs</code> starts the download, returns a job ID; <code>GET /jobs/{id}</code> returns status or the ZIP when ready.</span></li>
-      <li><span class="check">&#8594;</span><span><strong>Webhook integration</strong> &mdash; If Autoenhance supports completion webhooks, trigger the batch download automatically when an order finishes processing.</span></li>
+      <li><span class="check">&#8594;</span><span><strong>Poll-until-ready</strong> &mdash; A <code>wait=true</code> param that retries until all images are processed before downloading.</span></li>
+      <li><span class="check">&#8594;</span><span><strong>Async job pattern</strong> &mdash; <code>POST /jobs</code> starts the download and returns a job ID; <code>GET /jobs/{id}</code> returns status or the ZIP.</span></li>
+      <li><span class="check">&#8594;</span><span><strong>Webhook integration</strong> &mdash; Auto-trigger the batch download when Autoenhance signals an order is complete.</span></li>
     </ul>
   </details>
 </div>
@@ -696,48 +696,48 @@ async def ui():
 
     <h3>Observability</h3>
     <ul class="handled">
-      <li><span class="prod cur">&#9679;</span><span><strong>Structured logging</strong> &mdash; Currently using Python <code>logging</code> with INFO/WARNING/ERROR levels. Each request logs order retrieval, per-image download status, and final counts.</span></li>
-      <li><span class="prod next">&#9675;</span><span><strong>Distributed tracing</strong> &mdash; Add OpenTelemetry spans for the order fetch and each image download. Would let you see exactly where time is spent in a batch call (upstream latency vs ZIP creation).</span></li>
-      <li><span class="prod cur">&#9679;</span><span><strong>Error tracking</strong> &mdash; Sentry SDK integrated. Captures unhandled exceptions with request context. Activated via <code>SENTRY_DSN</code> env var (no-op when unset).</span></li>
+      <li><span class="prod cur">&#9679;</span><span><strong>Structured logging</strong> &mdash; Python <code>logging</code> at INFO/WARNING/ERROR. Logs order retrieval, per-image status, and final counts.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Distributed tracing</strong> &mdash; OpenTelemetry spans for the order fetch and each image download. Shows where time is spent (upstream latency vs. ZIP creation).</span></li>
+      <li><span class="prod cur">&#9679;</span><span><strong>Error tracking</strong> &mdash; Sentry SDK captures unhandled exceptions with request context. Activated via <code>SENTRY_DSN</code> env var; no-op when unset.</span></li>
     </ul>
 
     <h3>Metrics</h3>
     <ul class="handled">
-      <li><span class="prod next">&#9675;</span><span><strong>Request latency</strong> &mdash; P50/P95/P99 for the batch endpoint. Latency correlates with image count, so track per-image latency too.</span></li>
-      <li><span class="prod next">&#9675;</span><span><strong>Success/failure rates</strong> &mdash; Track full success, partial success, and total failure rates. Alert if partial failures spike (could indicate Autoenhance processing delays).</span></li>
-      <li><span class="prod next">&#9675;</span><span><strong>Upstream dependency health</strong> &mdash; Track Autoenhance API response times and error rates separately. If their API degrades, we need to know before our users report it.</span></li>
-      <li><span class="prod next">&#9675;</span><span><strong>ZIP size distribution</strong> &mdash; Monitor payload sizes to catch memory pressure early and inform when to switch to streaming.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Request latency</strong> &mdash; P50/P95/P99 for the batch endpoint, plus per-image latency (scales with order size).</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Success/failure rates</strong> &mdash; Full success, partial success, and total failure. Alert on partial-failure spikes (may signal processing delays).</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Upstream health</strong> &mdash; Track Autoenhance API response times and errors separately. Detect degradation before users report it.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>ZIP size distribution</strong> &mdash; Monitor payload sizes to catch memory pressure early.</span></li>
     </ul>
 
     <h3>Versioning</h3>
     <ul class="handled">
-      <li><span class="prod cur">&#9679;</span><span><strong>Autoenhance API</strong> &mdash; We're pinned to <code>/v3</code>. If they release v4, our endpoint keeps working until we explicitly migrate.</span></li>
-      <li><span class="prod next">&#9675;</span><span><strong>Our own API</strong> &mdash; Currently unversioned (<code>/orders/{id}/images</code>). For production, prefix with <code>/v1/</code> so we can evolve the response format (e.g. add metadata JSON alongside the ZIP) without breaking existing callers.</span></li>
-      <li><span class="prod next">&#9675;</span><span><strong>Dependency pinning</strong> &mdash; <code>requirements.txt</code> pins exact versions. Add a lockfile or use <code>pip-tools</code> for reproducible builds with transitive deps.</span></li>
+      <li><span class="prod cur">&#9679;</span><span><strong>Autoenhance API</strong> &mdash; Pinned to <code>/v3</code>. A v4 release won't break us until we explicitly migrate.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Our own API</strong> &mdash; Currently unversioned. Add a <code>/v1/</code> prefix so the response format can evolve without breaking callers.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Dependency pinning</strong> &mdash; Exact versions in <code>requirements.txt</code>. Add <code>pip-tools</code> for reproducible builds with transitive deps.</span></li>
     </ul>
 
     <h3>Security</h3>
     <ul class="handled">
-      <li><span class="prod cur">&#9679;</span><span><strong>API key isolation</strong> &mdash; Key is in env var, never committed. <code>.gitignore</code> excludes <code>.env</code>.</span></li>
-      <li><span class="prod cur">&#9679;</span><span><strong>Input validation</strong> &mdash; Order ID is validated as UUID format before making any upstream calls. Rejects malformed input early with a clear 400 error.</span></li>
-      <li><span class="prod next">&#9675;</span><span><strong>Rate limiting our endpoint</strong> &mdash; No rate limiting on our batch endpoint currently. A single caller could trigger many upstream API calls. Add per-IP or token-based throttling.</span></li>
-      <li><span class="prod next">&#9675;</span><span><strong>Authentication</strong> &mdash; Our endpoint is public. For production, add API key or OAuth to control who can trigger batch downloads (and consume Autoenhance credits).</span></li>
+      <li><span class="prod cur">&#9679;</span><span><strong>API key isolation</strong> &mdash; Stored in env var, never committed. <code>.gitignore</code> excludes <code>.env</code>.</span></li>
+      <li><span class="prod cur">&#9679;</span><span><strong>Input validation</strong> &mdash; Order ID validated as UUID before any upstream call. Malformed input returns 400 immediately.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Rate limiting</strong> &mdash; Each batch call fans out to N upstream requests. Add per-IP throttling to prevent quota exhaustion.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Authentication</strong> &mdash; Endpoint is currently public. Add API key or OAuth to control who triggers downloads (and consumes credits).</span></li>
     </ul>
 
     <h3>Testing</h3>
     <ul class="handled">
-      <li><span class="prod cur">&#9679;</span><span><strong>Manual E2E</strong> &mdash; Tested with a real order (3 images) against the live Autoenhance API, both locally and on Render.</span></li>
-      <li><span class="prod cur">&#9679;</span><span><strong>Unit tests</strong> &mdash; 13 tests using <code>httpx</code> mock transport. Covers input validation, full/partial/total failure, empty orders, duplicate names, health check, and UI.</span></li>
-      <li><span class="prod next">&#9675;</span><span><strong>Integration tests</strong> &mdash; Use <code>x-dev-mode</code> header to run real API calls without consuming credits. Assert ZIP contents and structure.</span></li>
-      <li><span class="prod next">&#9675;</span><span><strong>Load testing</strong> &mdash; Understand how the endpoint behaves with large orders (50+ images) and concurrent callers. Identify memory and timeout boundaries.</span></li>
+      <li><span class="prod cur">&#9679;</span><span><strong>Manual E2E</strong> &mdash; Verified with a real 3-image order against the live API, locally and on Render.</span></li>
+      <li><span class="prod cur">&#9679;</span><span><strong>Unit tests</strong> &mdash; 13 tests via <code>httpx</code> mock transport. Covers validation, success/partial/total failure, edge cases, health, and UI.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Integration tests</strong> &mdash; Real API calls via <code>x-dev-mode</code> (no credits). Assert ZIP contents and structure.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Load testing</strong> &mdash; Stress-test with large orders (50+ images) and concurrent callers to find memory and timeout limits.</span></li>
     </ul>
 
     <h3>Operational</h3>
     <ul class="handled">
-      <li><span class="prod cur">&#9679;</span><span><strong>Health check</strong> &mdash; <code>/health</code> endpoint reports status and API key configuration. Used by UptimeRobot for uptime monitoring.</span></li>
-      <li><span class="prod next">&#9675;</span><span><strong>Graceful degradation</strong> &mdash; If Autoenhance is down, return a clear 503 with retry-after instead of timing out. Could add circuit breaker pattern.</span></li>
-      <li><span class="prod next">&#9675;</span><span><strong>Caching</strong> &mdash; Enhanced images are immutable once processed. Cache them by image ID + format + quality to avoid redundant downloads on repeat requests.</span></li>
-      <li><span class="prod next">&#9675;</span><span><strong>CI/CD</strong> &mdash; Currently auto-deploys from <code>main</code> via Render. Add a test stage (run unit tests before deploy) and staging environment.</span></li>
+      <li><span class="prod cur">&#9679;</span><span><strong>Health check</strong> &mdash; <code>/health</code> reports status and API key config. Monitored by UptimeRobot.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Graceful degradation</strong> &mdash; Return 503 with Retry-After when Autoenhance is down, instead of timing out. Circuit breaker pattern.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>Caching</strong> &mdash; Enhanced images are immutable. Cache by image ID + format + quality to skip redundant downloads.</span></li>
+      <li><span class="prod next">&#9675;</span><span><strong>CI/CD</strong> &mdash; Auto-deploys from <code>main</code> via Render. Add a test gate and staging environment.</span></li>
     </ul>
   </details>
 </div>
@@ -746,7 +746,7 @@ async def ui():
 <div class="tab-panel" id="tab-production">
 <div class="prod-card">
   <h2>Production-Hardened Version</h2>
-  <p class="prod-sub">This tab walks through what the batch endpoint looks like with production-grade additions actually implemented &mdash; input validation, unit tests, circuit breaker, caching, and structured error responses. The interview tab remains the primary submission.</p>
+  <p class="prod-sub">Production-grade additions to the batch endpoint: input validation, unit tests, error tracking, and patterns for circuit breaking, caching, and rate limiting. The Interview tab is the primary submission.</p>
 
   <h3>UUID Input Validation <span class="pill done">IMPLEMENTED</span></h3>
   <p class="file-ref">app.py &mdash; batch_download_order_images()</p>
@@ -761,7 +761,7 @@ uuid_pattern = re.compile(
         status_code=<span class="num">400</span>,
         detail=<span class="str">f"Invalid order ID format. Expected UUID, got: '{order_id}'"</span>,
     )</pre>
-  <div class="note">Rejects malformed input before any upstream API call. Prevents wasted round-trips and potential injection vectors.</div>
+  <div class="note">Rejects bad input before any upstream call. Prevents wasted round-trips and injection vectors.</div>
 
   <h3>Unit Test Suite <span class="pill done">IMPLEMENTED</span></h3>
   <p class="file-ref">test_app.py &mdash; 13 tests, all passing</p>
@@ -788,7 +788,7 @@ uuid_pattern = re.compile(
 
 <span class="cmt"># monkeypatch replaces httpx.AsyncClient per-test</span>
 monkeypatch.setattr(httpx, <span class="str">"AsyncClient"</span>, make_mock_client(...))</pre>
-  <div class="note">Tests use <code>httpx.MockTransport</code> to intercept all outgoing HTTP &mdash; no real API calls, no credits consumed. Each test configures its own mock responses for isolation.</div>
+  <div class="note"><code>httpx.MockTransport</code> intercepts all outgoing HTTP &mdash; no real API calls, no credits consumed. Each test configures its own mock responses for full isolation.</div>
 
   <h3>Sentry Error Tracking <span class="pill done">IMPLEMENTED</span></h3>
   <p class="file-ref">app.py &mdash; startup config</p>
@@ -801,7 +801,7 @@ monkeypatch.setattr(httpx, <span class="str">"AsyncClient"</span>, make_mock_cli
         traces_sample_rate=<span class="num">0.2</span>,
         environment=os.getenv(<span class="str">"SENTRY_ENV"</span>, <span class="str">"production"</span>),
     )</pre>
-  <div class="note">The FastAPI integration is automatic &mdash; Sentry captures unhandled exceptions with full request context (URL, headers, order ID). Traces sample at 20% to keep costs low. Zero impact when <code>SENTRY_DSN</code> is unset.</div>
+  <div class="note">FastAPI integration is automatic &mdash; Sentry captures unhandled exceptions with full request context. 20% trace sampling keeps costs low. No-op when <code>SENTRY_DSN</code> is unset.</div>
 
   <div class="sentry-dash">
     <h3>Live Error Dashboard <span class="pill done">LIVE</span></h3>
@@ -844,7 +844,7 @@ monkeypatch.setattr(httpx, <span class="str">"AsyncClient"</span>, make_mock_cli
 <span class="kw">if not</span> circuit_breaker.allow_request():
     <span class="kw">raise</span> HTTPException(<span class="num">503</span>, detail=<span class="str">"Autoenhance API temporarily unavailable"</span>,
         headers={<span class="str">"Retry-After"</span>: <span class="str">"60"</span>})</pre>
-  <div class="note">Stops cascading failures when Autoenhance is down. After 5 consecutive failures, the circuit opens and returns 503 immediately for 60 seconds instead of letting every request timeout.</div>
+  <div class="note">Prevents cascading failures. After 5 consecutive errors, returns 503 immediately for 60s instead of letting every request time out.</div>
 
   <h3>Response Caching <span class="pill new">NEXT STEP</span></h3>
   <p class="file-ref">Image-level cache by (image_id, format, quality)</p>
@@ -864,7 +864,7 @@ image_cache: dict[str, bytes] = {}
         <span class="kw">return</span> {<span class="str">"content"</span>: image_cache[key], ...}
     <span class="cmt"># ... download as before ...</span>
     image_cache[key] = resp.content  <span class="cmt"># store on success</span></pre>
-  <div class="note">Since enhanced images are immutable, caching avoids redundant downloads on repeated requests for the same order. In production, use Redis or memcached with a TTL instead of an in-memory dict.</div>
+  <div class="note">Enhanced images are immutable once processed, so caching avoids redundant downloads. In production, swap the in-memory dict for Redis or Memcached with a TTL.</div>
 
   <h3>Rate Limiting Our Endpoint <span class="pill new">NEXT STEP</span></h3>
   <pre><span class="cmt"># Using slowapi (built on limits library)</span>
@@ -877,7 +877,7 @@ limiter = Limiter(key_func=get_remote_address)
 <span class="dec">@limiter.limit</span>(<span class="str">"10/minute"</span>)
 <span class="kw">async def</span> <span class="fn">batch_download_order_images</span>(request: Request, ...):
     ...</pre>
-  <div class="note">Each batch call fans out to N upstream requests. Without rate limiting, a single caller could exhaust Autoenhance API quotas. 10 req/min per IP is a reasonable starting point.</div>
+  <div class="note">Each batch call fans out to N upstream requests. Without throttling, one caller could exhaust API quotas. 10 req/min per IP is a reasonable default.</div>
 
   <h3>Async Job Pattern for Large Orders <span class="pill new">NEXT STEP</span></h3>
   <pre><span class="cmt"># POST /jobs &mdash; start download, return immediately</span>
@@ -895,7 +895,7 @@ limiter = Limiter(key_func=get_remote_address)
     <span class="kw">if</span> job[<span class="str">"status"</span>] == <span class="str">"complete"</span>:
         <span class="kw">return</span> StreamingResponse(job[<span class="str">"zip_data"</span>], ...)
     <span class="kw">return</span> {<span class="str">"status"</span>: job[<span class="str">"status"</span>], <span class="str">"progress"</span>: job.get(<span class="str">"progress"</span>)}</pre>
-  <div class="note">For orders with 50+ images, the synchronous batch call risks HTTP timeouts. The job pattern lets the client fire-and-forget, then poll for the result. In production, back this with a task queue (Celery/RQ) and object storage for the ZIP.</div>
+  <div class="note">Large orders (50+ images) risk HTTP timeouts. The job pattern lets the client fire-and-forget, then poll. Back with a task queue (Celery / RQ) and object storage in production.</div>
 
 </div>
 </div><!-- /tab-production -->
@@ -923,7 +923,7 @@ form.addEventListener('submit', async (e) => {
   btn.textContent = 'Downloading...';
   status.className = 'info';
   status.style.display = 'block';
-  status.textContent = 'Fetching images from Autoenhance — this may take a moment...';
+  status.textContent = 'Fetching images from Autoenhance\u2026';
 
   try {
     const resp = await fetch(`/orders/${orderId}/images?${params}`);
@@ -944,7 +944,7 @@ form.addEventListener('submit', async (e) => {
     URL.revokeObjectURL(url);
 
     status.className = 'ok';
-    status.textContent = `Done — ${downloaded}/${total} images downloaded.` + (parseInt(failed) > 0 ? ` ${failed} failed (see report in ZIP).` : '');
+    status.textContent = `${downloaded}/${total} images downloaded.` + (parseInt(failed) > 0 ? ` ${failed} failed \u2014 see report in ZIP.` : '');
   } catch (err) {
     status.className = 'err';
     status.textContent = err.message;
@@ -976,14 +976,14 @@ async function createTestOrder() {
 
     document.getElementById('order_id').value = data.order_id;
     cs.className = 'ok';
-    cs.innerHTML = 'Order created: <strong>' + data.order_id + '</strong><br>' +
-      data.images_uploaded + ' image(s) uploaded. Wait ~60s for processing, then click Download ZIP.';
+    cs.innerHTML = '<strong>' + data.order_id + '</strong><br>' +
+      data.images_uploaded + ' image(s) uploaded. Allow ~60s for processing, then hit Download ZIP.';
   } catch (err) {
     cs.className = 'err';
     cs.textContent = err.message;
   } finally {
     createBtn.disabled = false;
-    createBtn.textContent = 'Create Order & Upload';
+    createBtn.textContent = 'Upload & Create Order';
   }
 }
 
@@ -1002,14 +1002,14 @@ async function createSampleOrder() {
 
     document.getElementById('order_id').value = data.order_id;
     cs.className = 'ok';
-    cs.innerHTML = 'Order created: <strong>' + data.order_id + '</strong><br>' +
-      data.images_uploaded + ' sample image(s) uploaded. Wait ~60s for processing, then click Download ZIP.';
+    cs.innerHTML = '<strong>' + data.order_id + '</strong><br>' +
+      data.images_uploaded + ' sample image(s) uploaded. Allow ~60s for processing, then hit Download ZIP.';
   } catch (err) {
     cs.className = 'err';
     cs.textContent = err.message;
   } finally {
     sampleBtn.disabled = false;
-    sampleBtn.textContent = 'One-Click Demo \u2014 Use Sample Images';
+    sampleBtn.textContent = 'Try Demo \u2014 Use Sample Images';
   }
 }
 
