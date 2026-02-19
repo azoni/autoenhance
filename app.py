@@ -271,34 +271,54 @@ async def ui():
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Autoenhance Batch Downloader</title>
+<title>Batch Downloader | Autoenhance.ai</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f1117; color: #e1e4e8; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
-  .card { background: #1c1f2b; border-radius: 12px; padding: 40px; width: 100%; max-width: 480px; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
-  h1 { font-size: 1.4rem; margin-bottom: 4px; }
-  .sub { color: #8b949e; font-size: 0.85rem; margin-bottom: 28px; }
-  label { display: block; font-size: 0.8rem; color: #8b949e; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
-  input, select { width: 100%; padding: 10px 12px; border: 1px solid #30363d; border-radius: 8px; background: #161b22; color: #e1e4e8; font-size: 0.95rem; margin-bottom: 18px; outline: none; transition: border-color 0.2s; }
-  input:focus, select:focus { border-color: #58a6ff; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; background: #f5f6ff; color: #222173; min-height: 100vh; display: flex; flex-direction: column; align-items: center; }
+  .topbar { width: 100%; background: #222173; padding: 16px 32px; display: flex; align-items: center; gap: 10px; }
+  .topbar svg { height: 28px; }
+  .topbar span { color: #fff; font-size: 1rem; font-weight: 600; letter-spacing: -0.2px; }
+  .topbar .badge { background: linear-gradient(135deg, #3bd8be, #77bff6); color: #222173; font-size: 0.7rem; font-weight: 700; padding: 2px 8px; border-radius: 9999px; margin-left: 8px; }
+  main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 40px 20px; width: 100%; }
+  .card { background: #ffffff; border-radius: 12px; padding: 40px; width: 100%; max-width: 500px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -2px rgba(0,0,0,0.06); }
+  h1 { font-size: 1.5rem; font-weight: 700; color: #222173; margin-bottom: 4px; }
+  .sub { color: #4f5c65; font-size: 0.9rem; margin-bottom: 28px; }
+  label { display: block; font-size: 0.78rem; color: #4f5c65; margin-bottom: 6px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; }
+  input, select { width: 100%; padding: 10px 14px; border: 1px solid #d0d5dd; border-radius: 8px; background: #fcfcfd; color: #222173; font-size: 0.95rem; margin-bottom: 18px; outline: none; transition: border-color 0.2s, box-shadow 0.2s; }
+  input:focus, select:focus { border-color: #3bd8be; box-shadow: 0 0 0 3px rgba(59,216,190,0.15); }
+  input::placeholder { color: #a0a8b4; }
   .row { display: flex; gap: 12px; }
   .row > div { flex: 1; }
-  .checks { display: flex; gap: 20px; margin-bottom: 22px; }
-  .checks label { display: flex; align-items: center; gap: 6px; text-transform: none; font-size: 0.9rem; color: #e1e4e8; cursor: pointer; }
-  .checks input { width: auto; margin: 0; }
-  button { width: 100%; padding: 12px; border: none; border-radius: 8px; background: #238636; color: #fff; font-size: 1rem; font-weight: 600; cursor: pointer; transition: background 0.2s; }
-  button:hover { background: #2ea043; }
-  button:disabled { background: #30363d; color: #8b949e; cursor: not-allowed; }
-  #status { margin-top: 16px; padding: 12px; border-radius: 8px; font-size: 0.85rem; display: none; }
-  #status.info { display: block; background: #161b22; border: 1px solid #30363d; color: #8b949e; }
-  #status.ok { display: block; background: #0d1117; border: 1px solid #238636; color: #3fb950; }
-  #status.err { display: block; background: #0d1117; border: 1px solid #da3633; color: #f85149; }
+  .checks { display: flex; gap: 24px; margin-bottom: 24px; }
+  .checks label { display: flex; align-items: center; gap: 7px; text-transform: none; font-size: 0.9rem; color: #222173; cursor: pointer; font-weight: 400; }
+  .checks input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: #3bd8be; }
+  button { width: 100%; padding: 12px; border: none; border-radius: 8px; background: linear-gradient(135deg, #28dbbf, #77bff6); color: #222173; font-size: 1rem; font-weight: 700; cursor: pointer; transition: opacity 0.2s, transform 0.1s; }
+  button:hover { opacity: 0.9; transform: translateY(-1px); }
+  button:active { transform: translateY(0); }
+  button:disabled { background: #d0d5dd; color: #a0a8b4; cursor: not-allowed; transform: none; }
+  #status { margin-top: 16px; padding: 12px 14px; border-radius: 8px; font-size: 0.85rem; display: none; }
+  #status.info { display: block; background: #e5f1fb; border: 1px solid #b8d4ec; color: #4f5c65; }
+  #status.ok { display: block; background: #ecfdf5; border: 1px solid #a7f3d0; color: #166534; }
+  #status.err { display: block; background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+  .footer { padding: 20px; text-align: center; font-size: 0.75rem; color: #a0a8b4; }
+  .footer a { color: #3bd8be; text-decoration: none; }
+  .footer a:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
+<div class="topbar">
+  <svg viewBox="0 0 120 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="14" cy="14" r="10" fill="url(#g)"/>
+    <path d="M10 14l3 3 5-6" stroke="#222173" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <defs><linearGradient id="g" x1="4" y1="4" x2="24" y2="24"><stop stop-color="#3bd8be"/><stop offset="1" stop-color="#77bff6"/></linearGradient></defs>
+  </svg>
+  <span>autoenhance.ai</span>
+  <span class="badge">BATCH API</span>
+</div>
+<main>
 <div class="card">
-  <h1>Autoenhance Batch Downloader</h1>
-  <p class="sub">Download all enhanced images for an order as a ZIP</p>
+  <h1>Batch Image Downloader</h1>
+  <p class="sub">Download all enhanced images for an order as a ZIP archive</p>
   <form id="form">
     <label for="order_id">Order ID</label>
     <input type="text" id="order_id" placeholder="e.g. 100aefc4-8664-4180-9a97-42f428c6aace" required>
@@ -318,12 +338,14 @@ async def ui():
     </div>
     <div class="checks">
       <label><input type="checkbox" id="dev_mode" checked> Dev mode (free, watermarked)</label>
-      <label><input type="checkbox" id="preview" checked> Preview</label>
+      <label><input type="checkbox" id="preview" checked> Preview quality</label>
     </div>
     <button type="submit" id="btn">Download ZIP</button>
   </form>
   <div id="status"></div>
 </div>
+</main>
+<div class="footer">Batch endpoint for <a href="https://autoenhance.ai" target="_blank">autoenhance.ai</a> &mdash; <a href="/docs">API Docs</a></div>
 <script>
 const form = document.getElementById('form');
 const btn = document.getElementById('btn');
