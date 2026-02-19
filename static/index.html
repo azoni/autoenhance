@@ -223,7 +223,7 @@
       <label><input type="checkbox" id="dev_mode" checked> Dev mode (free, watermarked)</label>
       <label><input type="checkbox" id="preview" checked> Preview quality</label>
     </div>
-    <button type="submit" id="btn" style="display:none;">Download ZIP</button>
+    <button type="submit" id="btn">Download ZIP</button>
   </form>
   <div id="poll-status"></div>
   <div id="status"></div>
@@ -520,13 +520,6 @@ const btn = document.getElementById('btn');
 const status = document.getElementById('status');
 const pollStatus = document.getElementById('poll-status');
 let pollTimer = null;
-
-// Show download button when order ID is entered manually
-document.getElementById('order_id').addEventListener('input', (e) => {
-  if (e.target.value.trim().length > 30) {
-    btn.style.display = '';
-  }
-});
 
 function buildParams() {
   const params = new URLSearchParams();
