@@ -67,3 +67,22 @@ Technical test — build a batch endpoint to download all images for an order.
 Each item marked as "done" (teal) or "next step" (gray) on the live page.
 
 **Live URL:** https://autoenhance.onrender.com
+
+---
+
+### 2026-02-19 — Hardening: Validation, Tests, Production Tab
+
+**UUID input validation added:**
+- Regex check at the top of the batch endpoint — rejects non-UUID order IDs with 400 before any upstream call.
+- Prevents wasted API round-trips and potential injection vectors.
+
+**Unit test suite created (`test_app.py`):**
+- 13 tests covering: input validation (invalid UUID, SQL injection, empty ID), successful ZIP downloads, partial failure with report, total failure → 422, empty order → 404, order not found, duplicate filename deduplication, health check, UI rendering.
+- Uses `httpx.MockTransport` — no real API calls, no credits consumed.
+- Each test creates its own mock client for full isolation.
+
+**Tabbed UI:**
+- Added "Interview Submission" / "Production Version" tabs to the web page.
+- Interview tab = existing downloader + documentation panels (stays the main focus).
+- Production tab = code walkthrough of implemented features (UUID validation, test suite) plus annotated examples of next-step patterns (circuit breaker, caching, rate limiting, async job pattern).
+- Goal: show the interviewer what production-ready looks like without over-engineering the submission itself.
