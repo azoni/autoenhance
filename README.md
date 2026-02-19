@@ -1,152 +1,114 @@
 # Autoenhance Batch Image Downloader
 
-A FastAPI service that provides a batch endpoint to download all enhanced images for a given Autoenhance order as a ZIP archive.
+A FastAPI service that downloads all enhanced images for a given Autoenhance order and returns them as a ZIP archive.
 
-## Overview
+**Live:** https://autoenhance.onrender.com
+**API Docs:** https://autoenhance.onrender.com/docs
 
-This service wraps the [Autoenhance API](https://docs.autoenhance.ai/) to provide a single endpoint that:
+## The Endpoint
 
-1. Retrieves an order by ID (`GET /v3/orders/{order_id}`)
-2. Downloads all enhanced images for that order concurrently (`GET /v3/images/{id}/enhanced`)
-3. Bundles the images into a ZIP file and returns it
+```
+GET /orders/{order_id}/images?format=jpeg&quality=80&preview=true&dev_mode=true
+```
 
-## Setup
+Returns a ZIP archive containing all enhanced images for the given order.
 
-### Prerequisites
+| Parameter  | Type   | Default | Description                                             |
+|------------|--------|---------|---------------------------------------------------------|
+| `order_id` | path   | —       | Autoenhance order UUID                                  |
+| `format`   | query  | `jpeg`  | Output format: `jpeg`, `png`, `webp`, `avif`, `jxl`    |
+| `quality`  | query  | —       | Image quality 1-90 (omit for API default)               |
+| `preview`  | query  | `true`  | `true` = free preview quality; `false` = full (credits) |
+| `dev_mode` | query  | `false` | Test without consuming credits (watermarked output)     |
 
-- Python 3.10+
-- An [Autoenhance.ai](https://autoenhance.ai) account with an API key
-
-### Installation
+**Response headers:** `X-Total-Images`, `X-Downloaded`, `X-Failed`
 
 ```bash
-cd autoenhance-batch
+# Download preview images as a ZIP
+curl "https://autoenhance.onrender.com/orders/{order_id}/images?dev_mode=true" -o images.zip
+```
+
+## How It Works
+
+1. Validates the order ID (UUID format) — rejects bad input with 400 before any upstream call.
+2. Retrieves the order from Autoenhance API v3.
+3. Downloads all enhanced images **concurrently** (`asyncio.gather` + semaphore, max 5).
+4. Bundles successful downloads into a ZIP. If some images fail, includes a `_download_report.txt`.
+5. Returns the ZIP with download stats in response headers.
+
+## Quick Start
+
+```bash
+# Clone and install
+git clone https://github.com/azoni/autoenhance.git
+cd autoenhance
 pip install -r requirements.txt
-```
 
-### Configuration
-
-```bash
+# Configure
 cp .env.example .env
-```
+# Edit .env — add your Autoenhance API key
 
-Edit `.env` and add your API key (found at https://app.autoenhance.ai/settings):
-
-```
-AUTOENHANCE_API_KEY=your_api_key_here
-```
-
-### Creating a Test Order
-
-If you don't have an existing order with enhanced images, use the helper script to upload some:
-
-```bash
-python setup_test_order.py photo1.jpg photo2.jpg photo3.jpg
-```
-
-This will create an order, upload your images for enhancement, and print the `order_id`. Wait roughly 60 seconds for Autoenhance to process the images before testing the batch endpoint.
-
-## Running the Server
-
-```bash
+# Run
 uvicorn app:app --reload
+# Open http://localhost:8000
 ```
 
-The server starts at http://localhost:8000.
-Interactive API docs (Swagger UI) are available at http://localhost:8000/docs.
-
-## API Reference
-
-### `GET /orders/{order_id}/images`
-
-Download all enhanced images for an order as a ZIP archive.
-
-**Path Parameters:**
-
-| Parameter  | Type   | Description           |
-| ---------- | ------ | --------------------- |
-| `order_id` | string | The Autoenhance order ID |
-
-**Query Parameters:**
-
-| Parameter  | Type   | Default  | Description                                              |
-| ---------- | ------ | -------- | -------------------------------------------------------- |
-| `preview`  | bool   | `true`   | `true` = free preview quality; `false` = full quality (uses credits) |
-| `format`   | string | `jpeg`   | Output format: `jpeg`, `png`, `webp`, `avif`, `jxl`     |
-| `quality`  | int    | —        | Image quality 1–90 (omit for API default)                |
-| `dev_mode` | bool   | `false`  | Test without consuming credits (images are watermarked)  |
-
-**Responses:**
-
-| Status | Description |
-| ------ | ----------- |
-| 200    | ZIP archive containing the enhanced images |
-| 404    | Order not found or contains no images |
-| 401    | Invalid API key |
-| 422    | No images could be downloaded (e.g. all still processing) |
-
-Response headers `X-Total-Images`, `X-Downloaded`, and `X-Failed` report image counts.
-
-**Examples:**
+## Testing
 
 ```bash
-# Download preview images (free, default)
-curl http://localhost:8000/orders/YOUR_ORDER_ID/images -o images.zip
-
-# Full-quality PNGs via dev mode (watermarked, no credits used)
-curl "http://localhost:8000/orders/YOUR_ORDER_ID/images?preview=false&format=png&dev_mode=true" -o images.zip
+pytest test_app.py -v
 ```
 
-### `GET /health`
-
-Returns `{"status": "ok", "api_key_configured": true/false}`.
+13 tests covering input validation, successful downloads, partial/total failure, edge cases, health check, and UI rendering. Uses `httpx.MockTransport` — no real API calls, no credits consumed.
 
 ## Design Decisions
 
-### Why FastAPI?
-
-- **Async support** — ideal for making many concurrent HTTP calls to the Autoenhance API.
-- **Automatic OpenAPI docs** — the `/docs` page provides a ready-made interactive UI for testing.
-- **Built-in validation** — query parameters are validated (format enum, quality range) with clear error messages.
-
-### Why a ZIP archive?
-
-A ZIP is the most practical way to return multiple binary files in a single HTTP response:
-
-- Universally supported by all operating systems and programming languages.
-- Supports compression to reduce transfer size.
-- Alternatives considered and rejected:
-  - **Multipart response** — poor client support, harder to save to disk.
-  - **Base64 JSON** — ~33% size overhead for encoding binary data.
-  - **Individual URLs** — would require the caller to make N additional requests.
-
-### Concurrency Strategy
-
-Images are downloaded concurrently using `asyncio.gather` with a semaphore (limit of 5) to balance throughput against API rate limits. Each download has a 60-second timeout.
-
-### Partial Failure Handling
-
-If some images fail to download (e.g. still being processed), the endpoint still returns successfully with the images that *did* download. A `_download_report.txt` file is included in the ZIP documenting which images failed and why. If *all* images fail, a 422 error is returned with structured details.
-
-### Image Field Name Resilience
-
-The order response schema isn't fully documented, so the code checks for both `image_id`/`id` and `image_name`/`name` field variants to be resilient to schema variations.
-
-## Assumptions
-
-1. The `images` array in the order response contains objects with at least an `image_id` (or `id`) field.
-2. Images that haven't finished processing will return a non-200 status from the download endpoint.
-3. The Autoenhance API uses `x-api-key` header authentication for all endpoints.
-4. File naming uses the `image_name` from Autoenhance, with automatic deduplication for collisions.
-5. Preview mode is the default to avoid accidentally consuming credits during testing.
+| Decision | Rationale |
+|----------|-----------|
+| **ZIP format** | Universal support, good compression. Multipart has poor client support; base64 JSON adds 33% overhead. |
+| **Concurrent downloads** | `asyncio.gather` with semaphore (5) balances speed vs API rate limits. |
+| **Partial failure** | Returns what succeeded + failure report, rather than all-or-nothing. Only 422 if *all* fail. |
+| **60s per-image timeout** | Generous enough for large images; prevents indefinite hangs. |
+| **Follow redirects** | Autoenhance returns 302 → asset server → S3. Handled transparently by httpx. |
+| **In-memory buffering** | Fine for typical orders (<50 images). Would need streaming for larger. |
+| **UUID validation** | Regex check before any upstream call. Rejects SQL injection, malformed input. |
 
 ## Project Structure
 
 ```
 autoenhance-batch/
-├── app.py                 # FastAPI application with the batch endpoint
-├── setup_test_order.py    # Helper to create test orders by uploading images
-├── requirements.txt       # Python dependencies
-├── .env.example           # Environment variable template
-└── README.md              # This file
+├── app.py                  # FastAPI app — endpoint, UI, create-order helpers
+├── test_app.py             # 13 unit tests (httpx MockTransport)
+├── setup_test_order.py     # CLI helper to create test orders
+├── requirements.txt        # Pinned dependencies
+├── render.yaml             # Render deployment config
+├── sample_images/          # 3 bundled photos for zero-friction demo
+├── favicon.ico             # Autoenhance-styled favicon
+├── .env.example            # Environment variable template
+├── .gitignore
+├── ENGINEERING_LOG.md      # Detailed build log with decisions and trade-offs
+└── README.md
 ```
+
+## Configuration
+
+```bash
+# Required
+AUTOENHANCE_API_KEY=your_api_key_here
+
+# Optional — Sentry error tracking
+SENTRY_DSN=your_sentry_dsn
+SENTRY_AUTH_TOKEN=your_sentry_auth_token
+SENTRY_ORG=your_sentry_org
+SENTRY_PROJECT=your_sentry_project
+```
+
+## Additional Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /` | Web UI for testing the batch endpoint |
+| `GET /health` | Health check (`{"status": "ok", "api_key_configured": true}`) |
+| `GET /docs` | Interactive OpenAPI documentation (Swagger UI) |
+| `POST /api/create-order` | Upload images to create a test order |
+| `POST /api/create-sample-order` | Create an order using bundled sample images |
