@@ -264,9 +264,10 @@
       <li><span class="check">&#10003;</span><span><strong>Concurrency</strong> &mdash; Downloads run in parallel via <code>asyncio.gather</code> with a semaphore (max 5) to balance speed vs. API rate limits.</span></li>
       <li><span class="check">&#10003;</span><span><strong>Partial failure</strong> &mdash; If some images fail (still processing, timed out), the ZIP includes what succeeded plus a <code>_download_report.txt</code>.</span></li>
       <li><span class="check">&#10003;</span><span><strong>Timeouts</strong> &mdash; 60s per image. Response headers report total / downloaded / failed counts.</span></li>
-      <li><span class="check">&#10003;</span><span><strong>Response format</strong> &mdash; ZIP chosen over multipart (poor client support) or base64 JSON (33% size overhead). Universal support, good compression.</span></li>
+      <li><span class="check">&#10003;</span><span><strong>Response format</strong> &mdash; ZIP with <code>ZIP_STORED</code> (no compression) since JPEG/PNG/WebP are already compressed. Saves CPU with no size penalty.</span></li>
       <li><span class="check">&#10003;</span><span><strong>Redirects</strong> &mdash; Autoenhance returns 302 &rarr; asset server &rarr; S3. The client follows these transparently.</span></li>
-      <li><span class="check">&#10003;</span><span><strong>Memory</strong> &mdash; Images buffer in-memory before ZIP creation. Fine for typical orders (&lt;50 images); larger orders would need streaming or an async job.</span></li>
+      <li><span class="check">&#10003;</span><span><strong>Connection reuse</strong> &mdash; A shared <code>httpx.AsyncClient</code> is created once at startup via FastAPI lifespan. All requests reuse the same connection pool instead of creating one per request.</span></li>
+      <li><span class="check">&#10003;</span><span><strong>Memory</strong> &mdash; Image bytes are freed incrementally after writing to the ZIP (not held until the end). Orders capped at 100 images to bound peak memory usage.</span></li>
     </ul>
   </details>
 </div>
