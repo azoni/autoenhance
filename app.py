@@ -19,7 +19,7 @@ from typing import Literal, Optional
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pathlib import Path
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -272,6 +272,7 @@ async def ui():
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Batch Downloader | Autoenhance.ai</title>
+<link rel="icon" href="/favicon.ico" type="image/x-icon">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; background: #f5f6ff; color: #222173; min-height: 100vh; display: flex; flex-direction: column; align-items: center; }
@@ -400,6 +401,11 @@ form.addEventListener('submit', async (e) => {
 </script>
 </body>
 </html>"""
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return FileResponse(Path(__file__).resolve().parent / "favicon.ico", media_type="image/x-icon")
 
 
 @app.get("/health")
