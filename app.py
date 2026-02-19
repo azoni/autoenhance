@@ -20,8 +20,9 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from pathlib import Path
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -97,7 +98,7 @@ async def batch_download_order_images(
     if dev_mode:
         headers["x-dev-mode"] = "true"
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
         # ---- Step 1: Retrieve the order ----
         logger.info("Retrieving order %s", order_id)
         order_resp = await client.get(
