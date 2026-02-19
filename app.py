@@ -744,3 +744,9 @@ async def health_check():
         "status": "ok",
         "api_key_configured": bool(os.getenv("AUTOENHANCE_API_KEY")),
     }
+
+
+@app.get("/sentry-debug", include_in_schema=False)
+async def trigger_error():
+    """Trigger a test error to verify Sentry integration."""
+    division_by_zero = 1 / 0
