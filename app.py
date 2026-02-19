@@ -361,6 +361,92 @@ async def create_test_order(files: List[UploadFile] = File(...)):
     }
 
 
+SAMPLE_IMAGES_DIR = Path(__file__).resolve().parent / "sample_images"
+
+SAMPLE_CONTENT_TYPE_MAP = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+
+
+@app.post("/api/create-sample-order", include_in_schema=False)
+async def create_sample_order():
+    """Create a test order using the bundled sample images — no upload needed."""
+    if not SAMPLE_IMAGES_DIR.exists():
+        raise HTTPException(status_code=500, detail="Sample images directory not found.")
+
+    sample_files = sorted(
+        p for p in SAMPLE_IMAGES_DIR.iterdir()
+        if p.suffix.lower() in SAMPLE_CONTENT_TYPE_MAP
+    )
+    if not sample_files:
+        raise HTTPException(status_code=500, detail="No sample images found.")
+
+    api_key = _get_api_key()
+    headers = {"x-api-key": api_key, "Content-Type": "application/json"}
+
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+        # 1. Create order
+        order_resp = await client.post(
+            f"{API_BASE}/orders",
+            headers=headers,
+            json={"name": f"Sample Order ({len(sample_files)} images)"},
+        )
+        if order_resp.status_code not in (200, 201):
+            raise HTTPException(
+                status_code=order_resp.status_code,
+                detail=f"Failed to create order: {order_resp.text}",
+            )
+
+        order_data = order_resp.json()
+        order_id = order_data["order_id"]
+        logger.info("Created sample order %s", order_id)
+
+        # 2. Register and upload each sample image
+        uploaded = []
+        for path in sample_files:
+            content_type = SAMPLE_CONTENT_TYPE_MAP[path.suffix.lower()]
+            image_name = path.stem
+
+            reg_resp = await client.post(
+                f"{API_BASE}/images/",
+                headers=headers,
+                json={
+                    "image_name": image_name,
+                    "order_id": order_id,
+                    "contentType": content_type,
+                },
+            )
+            if reg_resp.status_code not in (200, 201):
+                logger.warning("Failed to register %s: %s", image_name, reg_resp.text)
+                continue
+
+            reg_data = reg_resp.json()
+            upload_url = reg_data.get("s3PutObjectUrl") or reg_data.get("upload_url")
+            image_id = reg_data.get("image_id")
+
+            with open(path, "rb") as f:
+                content = f.read()
+            put_resp = await client.put(
+                upload_url,
+                content=content,
+                headers={"Content-Type": content_type},
+            )
+            if put_resp.status_code in (200, 201):
+                uploaded.append({"image_id": image_id, "name": image_name})
+                logger.info("Uploaded sample %s (%s)", image_name, image_id)
+            else:
+                logger.warning("S3 upload failed for %s: %d", image_name, put_resp.status_code)
+
+    return {
+        "order_id": order_id,
+        "images_uploaded": len(uploaded),
+        "images": uploaded,
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 async def ui():
     """Simple web UI for testing the batch download endpoint."""
@@ -434,6 +520,9 @@ async def ui():
   .create-body button { background: #222173; color: #fff; font-size: 0.85rem; padding: 10px; border-radius: 8px; border: none; cursor: pointer; font-weight: 600; transition: opacity 0.2s; }
   .create-body button:hover { opacity: 0.85; }
   .create-body button:disabled { background: #d0d5dd; color: #a0a8b4; cursor: not-allowed; }
+  #sample-btn { background: linear-gradient(135deg, #28dbbf, #77bff6); color: #222173; font-size: 0.95rem; font-weight: 700; padding: 12px; width: 100%; }
+  #sample-btn:hover { opacity: 0.9; transform: translateY(-1px); }
+  #sample-btn:disabled { background: #d0d5dd; color: #a0a8b4; cursor: not-allowed; transform: none; }
   #create-status { display: none; font-size: 0.82rem; padding: 10px 12px; border-radius: 6px; line-height: 1.5; }
   #create-status.info { display: block; background: #e5f1fb; border: 1px solid #b8d4ec; color: #4f5c65; }
   #create-status.ok { display: block; background: #ecfdf5; border: 1px solid #a7f3d0; color: #166534; }
@@ -516,11 +605,13 @@ async def ui():
   <h1>Batch Image Downloader</h1>
   <p class="sub">Download all enhanced images for an order as a ZIP archive</p>
   <details id="create-section" class="create-order">
-    <summary>Need a test order? Upload images here</summary>
+    <summary>Need a test order? Try it here</summary>
     <div class="create-body">
-      <p class="create-hint">Select one or more images (.jpg, .png, .webp). They'll be uploaded to Autoenhance and grouped into a new order. Wait ~60 seconds for processing before downloading.</p>
+      <button type="button" id="sample-btn" onclick="createSampleOrder()">One-Click Demo &mdash; Use Sample Images</button>
+      <p class="create-hint" style="text-align:center;color:#a0a8b4;font-size:0.72rem;">Creates an order with 3 bundled real-estate photos. No files needed.</p>
+      <div style="display:flex;align-items:center;gap:10px;margin:4px 0 2px 0;"><hr style="flex:1;border:none;border-top:1px solid #e0e0ea;"><span style="font-size:0.72rem;color:#a0a8b4;">or upload your own</span><hr style="flex:1;border:none;border-top:1px solid #e0e0ea;"></div>
       <input type="file" id="upload_files" multiple accept=".jpg,.jpeg,.png,.webp">
-      <button type="button" id="create-btn" onclick="createTestOrder()">Create Order &amp; Upload</button>
+      <button type="button" id="create-btn" onclick="createTestOrder()">Upload &amp; Create Order</button>
       <div id="create-status"></div>
     </div>
   </details>
@@ -893,6 +984,32 @@ async function createTestOrder() {
   } finally {
     createBtn.disabled = false;
     createBtn.textContent = 'Create Order & Upload';
+  }
+}
+
+async function createSampleOrder() {
+  const sampleBtn = document.getElementById('sample-btn');
+  const cs = document.getElementById('create-status');
+  sampleBtn.disabled = true;
+  sampleBtn.textContent = 'Creating order with sample images...';
+  cs.className = 'info';
+  cs.textContent = 'Uploading 3 sample real-estate photos to Autoenhance...';
+
+  try {
+    const resp = await fetch('/api/create-sample-order', { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'HTTP ' + resp.status);
+
+    document.getElementById('order_id').value = data.order_id;
+    cs.className = 'ok';
+    cs.innerHTML = 'Order created: <strong>' + data.order_id + '</strong><br>' +
+      data.images_uploaded + ' sample image(s) uploaded. Wait ~60s for processing, then click Download ZIP.';
+  } catch (err) {
+    cs.className = 'err';
+    cs.textContent = err.message;
+  } finally {
+    sampleBtn.disabled = false;
+    sampleBtn.textContent = 'One-Click Demo \u2014 Use Sample Images';
   }
 }
 
