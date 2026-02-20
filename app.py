@@ -14,6 +14,7 @@ import io
 import logging
 import os
 import re
+import time
 import zipfile
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -69,6 +70,18 @@ _EXT_MAP = {
 
 # Shared HTTP client — created once at startup, reuses connections across requests
 _http_client: httpx.AsyncClient | None = None
+
+# Runtime stats — in-memory counters reset on restart
+_stats = {
+    "started_at": time.time(),
+    "orders_processed": 0,
+    "images_downloaded": 0,
+    "images_failed": 0,
+    "zips_served": 0,
+    "orders_created": 0,
+    "images_uploaded": 0,
+    "errors": [],  # last 20 errors
+}
 
 
 def _get_http_client() -> httpx.AsyncClient:
@@ -265,6 +278,15 @@ async def batch_download_order_images(
     failed = [r for r in results if r["content"] is None]
 
     if not successful:
+        _stats["orders_processed"] += 1
+        _stats["images_failed"] += len(failed)
+        _stats["errors"].append({
+            "time": time.time(),
+            "order_id": order_id,
+            "error": "All images failed",
+            "count": len(failed),
+        })
+        _stats["errors"] = _stats["errors"][-20:]
         raise HTTPException(
             status_code=422,
             detail={
@@ -312,6 +334,19 @@ async def batch_download_order_images(
     safe_name = "".join(
         c if c.isalnum() or c in "-_ " else "_" for c in order_name
     )
+
+    _stats["orders_processed"] += 1
+    _stats["images_downloaded"] += len(successful)
+    _stats["images_failed"] += len(failed)
+    _stats["zips_served"] += 1
+    if failed:
+        _stats["errors"].append({
+            "time": time.time(),
+            "order_id": order_id,
+            "error": f"Partial failure: {len(failed)}/{len(images)} images failed",
+            "count": len(failed),
+        })
+        _stats["errors"] = _stats["errors"][-20:]
 
     logger.info(
         "Returning ZIP: %d downloaded, %d failed", len(successful), len(failed)
@@ -398,6 +433,9 @@ async def _create_order(
         else:
             logger.warning("S3 upload failed for %s: %d", image_name, put_resp.status_code)
 
+    _stats["orders_created"] += 1
+    _stats["images_uploaded"] += len(uploaded)
+
     return {
         "order_id": order_id,
         "images_uploaded": len(uploaded),
@@ -462,6 +500,26 @@ async def health_check():
     return {
         "status": "ok",
         "api_key_configured": bool(os.getenv("AUTOENHANCE_API_KEY")),
+    }
+
+
+@app.get("/api/stats", include_in_schema=False)
+async def runtime_stats():
+    """Runtime stats for the chatbot and monitoring."""
+    uptime = time.time() - _stats["started_at"]
+    return {
+        "uptime_seconds": round(uptime),
+        "orders_processed": _stats["orders_processed"],
+        "images_downloaded": _stats["images_downloaded"],
+        "images_failed": _stats["images_failed"],
+        "zips_served": _stats["zips_served"],
+        "orders_created": _stats["orders_created"],
+        "images_uploaded": _stats["images_uploaded"],
+        "recent_errors": _stats["errors"][-5:],
+        "limits": {
+            "max_concurrent_downloads": MAX_CONCURRENT_DOWNLOADS,
+            "max_images_per_order": MAX_IMAGES_PER_ORDER,
+        },
     }
 
 

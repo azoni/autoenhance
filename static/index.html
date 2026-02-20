@@ -164,6 +164,18 @@
   .chat-input-row { padding: 12px 16px; border-top: 1px solid #f0f0f5; display: flex; gap: 8px; }
   .chat-input-row input { flex: 1; margin-bottom: 0; padding: 10px 14px; font-size: 0.9rem; }
   .chat-input-row button { width: auto; padding: 10px 20px; font-size: 0.85rem; white-space: nowrap; }
+  /* Live stats bar */
+  .stats-bar { background: #fff; border-radius: 12px; padding: 20px 24px; width: 100%; max-width: 500px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -2px rgba(0,0,0,0.06); margin-top: 20px; }
+  .stats-bar .stats-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .stats-bar .stats-head h3 { font-size: 0.82rem; font-weight: 700; color: #222173; display: flex; align-items: center; gap: 8px; margin: 0; }
+  .stats-bar .stats-head .live-dot { width: 8px; height: 8px; border-radius: 50%; background: #3bd8be; display: inline-block; animation: pulse-dot 2s ease-in-out infinite; }
+  @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+  .stats-bar .stats-head .uptime { font-size: 0.72rem; color: #a0a8b4; font-weight: 400; }
+  .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .stat-card { background: #f8f8ff; border-radius: 8px; padding: 12px 10px; text-align: center; }
+  .stat-card .stat-num { font-size: 1.3rem; font-weight: 800; color: #222173; line-height: 1.2; }
+  .stat-card .stat-label { font-size: 0.65rem; color: #6c7086; text-transform: uppercase; letter-spacing: 0.3px; margin-top: 2px; }
+  .stat-card.err .stat-num { color: #991b1b; }
 </style>
 </head>
 <body>
@@ -342,6 +354,18 @@
     </ul>
   </details>
 </div>
+<div class="stats-bar" id="stats-bar">
+  <div class="stats-head">
+    <h3><span class="live-dot"></span> Live Server Stats</h3>
+    <span class="uptime" id="stats-uptime"></span>
+  </div>
+  <div class="stats-grid">
+    <div class="stat-card"><div class="stat-num" id="st-orders">-</div><div class="stat-label">Orders</div></div>
+    <div class="stat-card"><div class="stat-num" id="st-images">-</div><div class="stat-label">Images</div></div>
+    <div class="stat-card"><div class="stat-num" id="st-zips">-</div><div class="stat-label">ZIPs</div></div>
+    <div class="stat-card" id="st-err-card"><div class="stat-num" id="st-errors">-</div><div class="stat-label">Failed</div></div>
+  </div>
+</div>
 </div><!-- /tab-interview -->
 
 <div class="tab-panel" id="tab-production">
@@ -516,7 +540,7 @@ limiter = Limiter(key_func=get_remote_address)
     <button onclick="askChip(this)">How are errors handled?</button>
     <button onclick="askChip(this)">What would you add for production?</button>
     <button onclick="askChip(this)">Tell me about Charlton's background</button>
-    <button onclick="askChip(this)">Why did Charlton build it this way?</button>
+    <button onclick="askChip(this)">How many images have you processed?</button>
   </div>
   <div class="chat-input-row">
     <input type="text" id="chat-input" placeholder="Ask about the endpoint, design, or Charlton..." onkeydown="if(event.key==='Enter')sendChat()">
@@ -837,6 +861,41 @@ function askChip(btn) {
   sendChat();
 }
 
+async function fetchStats() {
+  try {
+    const resp = await fetch('/api/stats');
+    if (resp.ok) return await resp.json();
+  } catch(e) {}
+  return null;
+}
+
+function formatStatsForContext(stats) {
+  if (!stats) return '';
+  const upH = Math.floor(stats.uptime_seconds / 3600);
+  const upM = Math.floor((stats.uptime_seconds % 3600) / 60);
+  const uptime = upH > 0 ? upH + 'h ' + upM + 'm' : upM + 'm';
+  let s = '\n\nLIVE SERVER STATS (real-time from /api/stats):';
+  s += '\n- Server uptime: ' + uptime;
+  s += '\n- Orders processed (downloads): ' + stats.orders_processed;
+  s += '\n- Images downloaded: ' + stats.images_downloaded;
+  s += '\n- Images failed: ' + stats.images_failed;
+  s += '\n- ZIP archives served: ' + stats.zips_served;
+  s += '\n- Orders created (uploads): ' + stats.orders_created;
+  s += '\n- Images uploaded: ' + stats.images_uploaded;
+  s += '\n- Max concurrent downloads: ' + stats.limits.max_concurrent_downloads;
+  s += '\n- Max images per order: ' + stats.limits.max_images_per_order;
+  if (stats.recent_errors && stats.recent_errors.length > 0) {
+    s += '\n- Recent errors (' + stats.recent_errors.length + '):';
+    stats.recent_errors.forEach(e => {
+      s += '\n  * ' + e.error + ' (order: ' + e.order_id.slice(0,8) + '...)';
+    });
+  } else {
+    s += '\n- Recent errors: none';
+  }
+  s += '\nUse these stats when answering questions about usage, performance, or errors. Quote the actual numbers.';
+  return s;
+}
+
 async function sendChat() {
   const input = document.getElementById('chat-input');
   const msg = input.value.trim();
@@ -861,6 +920,7 @@ async function sendChat() {
   sendBtn.disabled = true;
 
   try {
+    const stats = await fetchStats();
     const resp = await fetch(AZONI_API, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -868,7 +928,8 @@ async function sendChat() {
         messages: chatHistory,
         mode: 'professional',
         model: 'openai/gpt-4o-mini',
-        context: 'autoenhance-interview'
+        context: 'autoenhance-interview',
+        liveStats: stats ? formatStatsForContext(stats) : ''
       })
     });
     const t = document.getElementById('chat-typing');
@@ -914,6 +975,30 @@ function scrollChatToBottom() {
   const c = document.getElementById('chat-messages');
   c.scrollTop = c.scrollHeight;
 }
+
+// ===== Live Stats Bar =====
+function renderStats(data) {
+  if (!data) return;
+  const s = data.uptime_seconds;
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  document.getElementById('stats-uptime').textContent = 'Uptime: ' + (h > 0 ? h + 'h ' : '') + m + 'm';
+  document.getElementById('st-orders').textContent = data.orders_processed;
+  document.getElementById('st-images').textContent = data.images_downloaded;
+  document.getElementById('st-zips').textContent = data.zips_served;
+  document.getElementById('st-errors').textContent = data.images_failed;
+  const errCard = document.getElementById('st-err-card');
+  if (data.images_failed > 0) errCard.classList.add('err');
+  else errCard.classList.remove('err');
+}
+
+async function refreshStats() {
+  const data = await fetchStats();
+  if (data) renderStats(data);
+}
+
+refreshStats();
+setInterval(refreshStats, 30000);
 </script>
 </body>
 </html>
