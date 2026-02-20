@@ -486,6 +486,29 @@ _stats = {
     <span class="kw">return</span> {<span class="str">"uptime_seconds"</span>: ..., **_stats}</pre>
   <div class="note">Live stats bar on the Interview tab auto-refreshes every 30s. Stats are also injected into the Azoni AI chatbot context so it can answer questions like &ldquo;How many images have you processed?&rdquo; with real numbers.</div>
 
+  <h3>Security Hardening <span class="pill done">IMPLEMENTED</span></h3>
+  <p class="file-ref">app.py &mdash; middleware, auth, error handling</p>
+  <pre><span class="cmt"># CORS — restrict to known origins only</span>
+app.add_middleware(CORSMiddleware,
+    allow_origins=[<span class="str">"https://autoenhance.onrender.com"</span>, ...],
+    allow_methods=[<span class="str">"GET"</span>, <span class="str">"POST"</span>, <span class="str">"HEAD"</span>, <span class="str">"OPTIONS"</span>])
+
+<span class="cmt"># Security headers on every response</span>
+response.headers[<span class="str">"X-Content-Type-Options"</span>] = <span class="str">"nosniff"</span>
+response.headers[<span class="str">"X-Frame-Options"</span>] = <span class="str">"DENY"</span>
+response.headers[<span class="str">"Referrer-Policy"</span>] = <span class="str">"strict-origin-when-cross-origin"</span>
+
+<span class="cmt"># Admin token gates credit-consuming endpoints</span>
+_admin_token = os.getenv(<span class="str">"ADMIN_TOKEN"</span>) <span class="kw">or</span> secrets.token_urlsafe(<span class="num">32</span>)
+<span class="kw">def</span> <span class="fn">_require_admin</span>(request):
+    token = request.headers.get(<span class="str">"X-Admin-Token"</span>)
+    <span class="kw">if not</span> hmac.compare_digest(token, _admin_token): ...
+
+<span class="cmt"># Upstream errors logged, not leaked to clients</span>
+logger.error(<span class="str">"Upstream error: %d %s"</span>, status, text)
+<span class="kw">raise</span> HTTPException(<span class="num">502</span>, <span class="str">"Failed to retrieve order"</span>)</pre>
+  <div class="note">CORS blocks cross-origin abuse. Security headers prevent clickjacking, MIME sniffing, and referrer leaks. Admin token (timing-safe via <code>hmac.compare_digest</code>) protects <code>/api/create-order</code>, <code>/api/create-sample-order</code>, and <code>/sentry-debug</code> from unauthorized use. Upstream API error bodies are logged server-side but never exposed to clients.</div>
+
   <h3>Circuit Breaker Pattern <span class="pill new">NEXT STEP</span></h3>
   <p class="file-ref">How it would integrate into app.py</p>
   <pre><span class="kw">class</span> <span class="fn">CircuitBreaker</span>:
