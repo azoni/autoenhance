@@ -748,7 +748,7 @@ async function createTestOrder() {
   for (const f of files) formData.append('files', f);
 
   try {
-    const resp = await fetch('/api/create-order', { method: 'POST', body: formData });
+    const resp = await fetch('/api/create-order', { method: 'POST', body: formData, headers: { 'X-Admin-Token': window.__AT || '' } });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.detail || 'HTTP ' + resp.status);
 
@@ -776,7 +776,7 @@ async function createSampleOrder() {
   stopPolling();
 
   try {
-    const resp = await fetch('/api/create-sample-order', { method: 'POST' });
+    const resp = await fetch('/api/create-sample-order', { method: 'POST', headers: { 'X-Admin-Token': window.__AT || '' } });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.detail || 'HTTP ' + resp.status);
 
@@ -872,7 +872,7 @@ async function triggerSentryTest() {
   s.style.color = '#991b1b';
   s.textContent = 'Triggering test error...';
   try {
-    await fetch('/sentry-debug');
+    await fetch('/sentry-debug', { headers: { 'X-Admin-Token': window.__AT || '' } });
   } catch(e) {}
   s.textContent = 'Test error sent to Sentry! Refresh in a few seconds to see it below.';
   s.style.background = '#ecfdf5';

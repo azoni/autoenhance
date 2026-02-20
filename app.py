@@ -21,11 +21,16 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal, Optional
 
+import hmac
+import secrets
+
 import httpx
 import sentry_sdk
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
@@ -108,6 +113,46 @@ app = FastAPI(
     lifespan=_lifespan,
 )
 
+# ── CORS ──────────────────────────────────────────────────────────────────
+_ALLOWED_ORIGINS = [
+    "https://autoenhance.onrender.com",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST", "HEAD", "OPTIONS"],
+    allow_headers=["Content-Type", "X-Admin-Token"],
+)
+
+
+# ── Security headers ─────────────────────────────────────────────────────
+class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        return response
+
+app.add_middleware(_SecurityHeadersMiddleware)
+
+# ── Admin token for protected endpoints ───────────────────────────────────
+# Set ADMIN_TOKEN in env to gate create-order and sentry-debug endpoints.
+# If unset, a random token is generated per-boot (logged at startup).
+_admin_token: str = os.getenv("ADMIN_TOKEN") or secrets.token_urlsafe(32)
+if not os.getenv("ADMIN_TOKEN"):
+    logger.info("No ADMIN_TOKEN set — generated ephemeral token: %s", _admin_token)
+
+
+def _require_admin(request: Request) -> None:
+    """Raise 403 if the request doesn't carry a valid admin token."""
+    token = request.headers.get("X-Admin-Token") or request.query_params.get("token")
+    if not token or not hmac.compare_digest(token, _admin_token):
+        raise HTTPException(status_code=403, detail="Forbidden — invalid or missing admin token.")
+
 
 def _get_api_key() -> str:
     key = os.getenv("AUTOENHANCE_API_KEY")
@@ -189,9 +234,10 @@ async def batch_download_order_images(
             status_code=401, detail="Invalid or missing API key."
         )
     if order_resp.status_code != 200:
+        logger.error("Upstream error retrieving order %s: %d %s", order_id, order_resp.status_code, order_resp.text)
         raise HTTPException(
-            status_code=order_resp.status_code,
-            detail=f"Failed to retrieve order: {order_resp.text}",
+            status_code=502,
+            detail=f"Failed to retrieve order (upstream returned {order_resp.status_code}).",
         )
 
     order = order_resp.json()
@@ -444,8 +490,9 @@ async def _create_order(
 
 
 @app.post("/api/create-order", include_in_schema=False)
-async def create_test_order(files: list[UploadFile] = File(...)):
+async def create_test_order(request: Request, files: list[UploadFile] = File(...)):
     """Upload images to Autoenhance and create a new order for testing."""
+    _require_admin(request)
     if not files:
         raise HTTPException(status_code=400, detail="No files provided.")
 
@@ -461,8 +508,9 @@ async def create_test_order(files: list[UploadFile] = File(...)):
 
 
 @app.post("/api/create-sample-order", include_in_schema=False)
-async def create_sample_order():
+async def create_sample_order(request: Request):
     """Create a test order using the bundled sample images — no upload needed."""
+    _require_admin(request)
     if not SAMPLE_IMAGES_DIR.exists():
         raise HTTPException(status_code=500, detail="Sample images directory not found.")
 
@@ -486,7 +534,10 @@ async def create_sample_order():
 async def ui():
     """Web UI for testing the batch download endpoint — served from static/index.html."""
     html_path = Path(__file__).resolve().parent / "static" / "index.html"
-    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    html = html_path.read_text(encoding="utf-8")
+    # Inject admin token so the UI can call protected endpoints
+    html = html.replace("</head>", f'<script>window.__AT="{_admin_token}";</script></head>')
+    return HTMLResponse(html)
 
 
 @app.get("/favicon.ico", include_in_schema=False)
@@ -524,8 +575,9 @@ async def runtime_stats():
 
 
 @app.get("/sentry-debug", include_in_schema=False)
-async def trigger_error():
+async def trigger_error(request: Request):
     """Trigger a test error to verify Sentry integration."""
+    _require_admin(request)
     1 / 0
 
 
