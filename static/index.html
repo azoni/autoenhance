@@ -49,6 +49,11 @@
   .checks { display: flex; gap: 24px; margin-bottom: 24px; }
   .checks label { display: flex; align-items: center; gap: 7px; text-transform: none; font-size: 0.9rem; color: #222173; cursor: pointer; font-weight: 400; }
   .checks input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: #3bd8be; }
+  .advanced-opts { margin-top: 16px; padding: 0; border: none; }
+  .advanced-opts summary { font-size: 0.75rem; font-weight: 600; color: #a0a8b4; cursor: pointer; text-align: center; padding: 4px 0; }
+  .advanced-opts summary:hover { color: #222173; }
+  .advanced-opts[open] summary { margin-bottom: 12px; color: #4f5c65; }
+  .advanced-opts .checks { margin-bottom: 0; }
   button { width: 100%; padding: 12px; border: none; border-radius: 8px; background: linear-gradient(135deg, #28dbbf, #77bff6); color: #222173; font-size: 1rem; font-weight: 700; cursor: pointer; transition: opacity 0.2s, transform 0.1s; }
   button:hover { opacity: 0.9; transform: translateY(-1px); }
   button:active { transform: translateY(0); }
@@ -212,25 +217,28 @@
   <form id="form">
     <label for="order_id">Order ID</label>
     <input type="text" id="order_id" placeholder="Paste your order UUID here" required>
-    <div class="row">
-      <div>
-        <label for="format">Format</label>
-        <select id="format">
-          <option value="jpeg" selected>JPEG</option>
-          <option value="png">PNG</option>
-          <option value="webp">WebP</option>
-        </select>
-      </div>
-      <div>
-        <label for="quality">Quality (1-90)</label>
-        <input type="number" id="quality" min="1" max="90" placeholder="Default">
-      </div>
-    </div>
-    <div class="checks">
-      <label><input type="checkbox" id="dev_mode" checked> Dev mode (free, watermarked)</label>
-      <label><input type="checkbox" id="preview" checked> Preview quality</label>
-    </div>
     <button type="submit" id="btn">Download ZIP</button>
+    <details class="advanced-opts">
+      <summary>Advanced options</summary>
+      <div class="row">
+        <div>
+          <label for="format">Format</label>
+          <select id="format">
+            <option value="jpeg" selected>JPEG</option>
+            <option value="png">PNG</option>
+            <option value="webp">WebP</option>
+          </select>
+        </div>
+        <div>
+          <label for="quality">Quality (1-90)</label>
+          <input type="number" id="quality" min="1" max="90" placeholder="Default">
+        </div>
+      </div>
+      <div class="checks">
+        <label><input type="checkbox" id="dev_mode" checked> Dev mode (free, watermarked)</label>
+        <label><input type="checkbox" id="preview" checked> Preview quality</label>
+      </div>
+    </details>
   </form>
   <div id="poll-status"></div>
   <div id="status"></div>
