@@ -401,6 +401,8 @@ uuid_pattern = re.compile(
   <div class="test-grid">
     <div class="test-item"><span class="pass">&#10003;</span> Invalid UUID rejected</div>
     <div class="test-item"><span class="pass">&#10003;</span> SQL injection blocked</div>
+    <div class="test-item"><span class="pass">&#10003;</span> Empty order ID &rarr; 400</div>
+    <div class="test-item"><span class="pass">&#10003;</span> Valid UUID passes through</div>
     <div class="test-item"><span class="pass">&#10003;</span> Full success &rarr; ZIP</div>
     <div class="test-item"><span class="pass">&#10003;</span> Correct filenames in ZIP</div>
     <div class="test-item"><span class="pass">&#10003;</span> Partial failure + report</div>
@@ -410,18 +412,15 @@ uuid_pattern = re.compile(
     <div class="test-item"><span class="pass">&#10003;</span> Duplicate names deduped</div>
     <div class="test-item"><span class="pass">&#10003;</span> Health endpoint</div>
     <div class="test-item"><span class="pass">&#10003;</span> UI returns HTML</div>
-    <div class="test-item"><span class="pass">&#10003;</span> Valid UUID passes through</div>
   </div>
-  <pre><span class="cmt"># Mock strategy: subclass httpx.AsyncClient with MockTransport</span>
-<span class="kw">class</span> <span class="fn">MockedAsyncClient</span>(httpx.AsyncClient):
-    <span class="kw">def</span> <span class="fn">__init__</span>(self, **kwargs):
-        kwargs.pop(<span class="str">"timeout"</span>, <span class="kw">None</span>)
-        kwargs.pop(<span class="str">"follow_redirects"</span>, <span class="kw">None</span>)
-        <span class="fn">super</span>().__init__(transport=transport, **kwargs)
+  <pre><span class="cmt"># Mock strategy: patch the shared client with MockTransport</span>
+<span class="kw">def</span> <span class="fn">make_mock_client</span>(order_response, image_responses):
+    transport = httpx.MockTransport(handler)
+    <span class="kw">return</span> httpx.AsyncClient(transport=transport)
 
-<span class="cmt"># monkeypatch replaces httpx.AsyncClient per-test</span>
-monkeypatch.setattr(httpx, <span class="str">"AsyncClient"</span>, make_mock_client(...))</pre>
-  <div class="note"><code>httpx.MockTransport</code> intercepts all outgoing HTTP &mdash; no real API calls, no credits consumed. Each test configures its own mock responses for full isolation.</div>
+<span class="cmt"># monkeypatch replaces the module-level shared client</span>
+monkeypatch.setattr(app_module, <span class="str">"_http_client"</span>, make_mock_client(...))</pre>
+  <div class="note"><code>httpx.MockTransport</code> intercepts all outgoing HTTP &mdash; no real API calls, no credits consumed. Patches the shared <code>_http_client</code> instance per-test for full isolation.</div>
 
   <h3>Sentry Error Tracking <span class="pill done">IMPLEMENTED</span></h3>
   <p class="file-ref">app.py &mdash; startup config</p>
@@ -449,6 +448,43 @@ monkeypatch.setattr(httpx, <span class="str">"AsyncClient"</span>, make_mock_cli
     </ul>
     <div class="sentry-status" id="sentry-status"></div>
   </div>
+
+  <h3>Performance Optimizations <span class="pill done">IMPLEMENTED</span></h3>
+  <p class="file-ref">app.py &mdash; lifespan, ZIP creation, download loop</p>
+  <pre><span class="cmt"># Shared HTTP client — created once at startup</span>
+<span class="dec">@asynccontextmanager</span>
+<span class="kw">async def</span> <span class="fn">_lifespan</span>(app: FastAPI):
+    <span class="kw">global</span> _http_client
+    _http_client = httpx.AsyncClient(timeout=<span class="num">60.0</span>, follow_redirects=<span class="kw">True</span>)
+    <span class="kw">yield</span>
+    <span class="kw">await</span> _http_client.aclose()
+
+<span class="cmt"># ZIP_STORED — no compression on already-compressed images</span>
+zipfile.ZipFile(zip_buffer, <span class="str">"w"</span>, zipfile.ZIP_STORED)
+
+<span class="cmt"># Free memory incrementally as images are written</span>
+zf.writestr(filename, result[<span class="str">"content"</span>])
+result[<span class="str">"content"</span>] = <span class="kw">None</span>
+
+<span class="cmt"># Cap at 100 images to bound memory usage</span>
+MAX_IMAGES_PER_ORDER = <span class="num">100</span></pre>
+  <div class="note">Connection reuse avoids per-request handshakes. ZIP_STORED saves CPU since JPEG/PNG/WebP are already compressed. Incremental freeing prevents 2x peak memory. 100-image cap bounds worst-case allocation.</div>
+
+  <h3>Runtime Stats &amp; Monitoring <span class="pill done">IMPLEMENTED</span></h3>
+  <p class="file-ref">app.py &mdash; /api/stats endpoint + live stats bar</p>
+  <pre><span class="cmt"># In-memory counters, incremented per request</span>
+_stats = {
+    <span class="str">"orders_processed"</span>: <span class="num">0</span>,
+    <span class="str">"images_downloaded"</span>: <span class="num">0</span>,
+    <span class="str">"images_failed"</span>: <span class="num">0</span>,
+    <span class="str">"zips_served"</span>: <span class="num">0</span>,
+    <span class="str">"errors"</span>: [],  <span class="cmt"># last 20 errors</span>
+}
+
+<span class="dec">@app.get</span>(<span class="str">"/api/stats"</span>)
+<span class="kw">async def</span> <span class="fn">runtime_stats</span>():
+    <span class="kw">return</span> {<span class="str">"uptime_seconds"</span>: ..., **_stats}</pre>
+  <div class="note">Live stats bar on the Interview tab auto-refreshes every 30s. Stats are also injected into the Azoni AI chatbot context so it can answer questions like &ldquo;How many images have you processed?&rdquo; with real numbers.</div>
 
   <h3>Circuit Breaker Pattern <span class="pill new">NEXT STEP</span></h3>
   <p class="file-ref">How it would integrate into app.py</p>
