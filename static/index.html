@@ -989,18 +989,12 @@ async function sendChat() {
 
     let data;
     try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 15000);
-      data = await callAzoni(ctrl.signal);
-      clearTimeout(timer);
+      data = await callAzoni(null);
     } catch (firstErr) {
-      // Retry once (handles cold starts)
+      // Retry once (handles cold starts / transient failures)
       const typingEl = document.getElementById('chat-typing');
       if (typingEl) typingEl.textContent = 'Retrying…';
-      const ctrl2 = new AbortController();
-      const timer2 = setTimeout(() => ctrl2.abort(), 20000);
-      data = await callAzoni(ctrl2.signal);
-      clearTimeout(timer2);
+      data = await callAzoni(null);
     }
 
     const t = document.getElementById('chat-typing');
