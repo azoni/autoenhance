@@ -965,26 +965,47 @@ async function sendChat() {
 
   try {
     const stats = await fetchStats();
-    const resp = await fetch(AZONI_API, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messages: chatHistory,
-        mode: 'professional',
-        model: 'openai/gpt-4o-mini',
-        context: 'autoenhance-interview',
-        liveStats: stats ? formatStatsForContext(stats) : ''
-      })
+    const payload = JSON.stringify({
+      messages: chatHistory,
+      mode: 'professional',
+      model: 'openai/gpt-4o-mini',
+      context: 'autoenhance-interview',
+      liveStats: stats ? formatStatsForContext(stats) : ''
     });
+
+    async function callAzoni(signal) {
+      const resp = await fetch(AZONI_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+        signal
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.error || 'API error: ' + resp.status);
+      }
+      return resp.json();
+    }
+
+    let data;
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 15000);
+      data = await callAzoni(ctrl.signal);
+      clearTimeout(timer);
+    } catch (firstErr) {
+      // Retry once (handles cold starts)
+      const typingEl = document.getElementById('chat-typing');
+      if (typingEl) typingEl.textContent = 'Retrying…';
+      const ctrl2 = new AbortController();
+      const timer2 = setTimeout(() => ctrl2.abort(), 20000);
+      data = await callAzoni(ctrl2.signal);
+      clearTimeout(timer2);
+    }
+
     const t = document.getElementById('chat-typing');
     if (t) t.remove();
 
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      throw new Error(err.error || 'API error: ' + resp.status);
-    }
-
-    const data = await resp.json();
     const reply = data.choices?.[0]?.message?.content || 'Sorry, I could not generate a response.';
     chatHistory.push({ role: 'assistant', content: reply });
     addChatMsg('assistant', reply);
