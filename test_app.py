@@ -10,12 +10,12 @@ import os
 import zipfile
 
 import httpx
-import pytest
 from fastapi.testclient import TestClient
 
 os.environ["AUTOENHANCE_API_KEY"] = "test-key-for-unit-tests"
+os.environ["SENTRY_DSN"] = ""  # prevent tests from firing real Sentry alerts
 
-import app as app_module
+import app.state as state_module
 from app import app
 
 client = TestClient(app)
@@ -85,7 +85,7 @@ class TestInputValidation:
 
     def test_valid_uuid_accepted(self, monkeypatch):
         # Won't be 400 — proves UUID validation passed
-        monkeypatch.setattr(app_module, "_http_client", make_mock_client())
+        monkeypatch.setattr(state_module, "_http_client", make_mock_client())
         resp = client.get(f"/orders/{VALID_ORDER_ID}/images?dev_mode=true")
         assert resp.status_code != 400
 
@@ -96,7 +96,7 @@ class TestInputValidation:
 
 class TestSuccessfulDownload:
     def test_full_success_returns_zip(self, monkeypatch):
-        monkeypatch.setattr(app_module, "_http_client", make_mock_client())
+        monkeypatch.setattr(state_module, "_http_client", make_mock_client())
 
         resp = client.get(f"/orders/{VALID_ORDER_ID}/images?dev_mode=true&format=jpeg")
         assert resp.status_code == 200
@@ -111,7 +111,7 @@ class TestSuccessfulDownload:
         assert all(n.endswith(".jpg") for n in names)
 
     def test_zip_contains_correct_filenames(self, monkeypatch):
-        monkeypatch.setattr(app_module, "_http_client", make_mock_client())
+        monkeypatch.setattr(state_module, "_http_client", make_mock_client())
 
         resp = client.get(f"/orders/{VALID_ORDER_ID}/images?format=png")
         zf = zipfile.ZipFile(io.BytesIO(resp.content))
@@ -126,7 +126,7 @@ class TestSuccessfulDownload:
 
 class TestPartialFailure:
     def test_partial_failure_includes_report(self, monkeypatch):
-        monkeypatch.setattr(app_module, "_http_client", make_mock_client(
+        monkeypatch.setattr(state_module, "_http_client", make_mock_client(
             image_responses={
                 "img-1": (200, FAKE_IMAGE_BYTES),
                 "img-2": (500, b""),
@@ -144,7 +144,7 @@ class TestPartialFailure:
         assert "img-2" in report
 
     def test_all_fail_returns_422(self, monkeypatch):
-        monkeypatch.setattr(app_module, "_http_client", make_mock_client(
+        monkeypatch.setattr(state_module, "_http_client", make_mock_client(
             image_responses={
                 "img-1": (500, b""),
                 "img-2": (500, b""),
@@ -161,9 +161,139 @@ class TestPartialFailure:
 # Tests — Edge cases
 # ---------------------------------------------------------------------------
 
+class TestQueryParams:
+    def test_quality_param_passed_through(self, monkeypatch):
+        """Quality param should reach the upstream image URL as a query param."""
+        captured_params: list[dict] = []
+
+        def param_handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/orders/" in url and "/images" not in url.split("/orders/")[1]:
+                return httpx.Response(200, json={
+                    "order_id": VALID_ORDER_ID,
+                    "name": "Test",
+                    "images": [{"image_id": "img-1", "image_name": "photo"}],
+                })
+            if "/images/img-1/enhanced" in url:
+                captured_params.append(dict(request.url.params))
+                return httpx.Response(200, content=FAKE_IMAGE_BYTES)
+            return httpx.Response(404, json={"detail": "Not found"})
+
+        transport = httpx.MockTransport(param_handler)
+        monkeypatch.setattr(state_module, "_http_client", httpx.AsyncClient(transport=transport))
+
+        resp = client.get(f"/orders/{VALID_ORDER_ID}/images?format=png&quality=75")
+        assert resp.status_code == 200
+        assert len(captured_params) == 1
+        assert captured_params[0]["quality"] == "75"
+        assert captured_params[0]["format"] == "png"
+
+
+class TestRetryLogic:
+    def test_retry_on_server_error_succeeds(self, monkeypatch):
+        """Image download retries once on 5xx and succeeds on the second attempt."""
+        attempt_count = {"img-1": 0}
+
+        def retry_handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/orders/" in url and "/images" not in url.split("/orders/")[1]:
+                return httpx.Response(200, json={
+                    "order_id": VALID_ORDER_ID,
+                    "name": "Test",
+                    "images": [{"image_id": "img-1", "image_name": "photo"}],
+                })
+            if "/images/img-1/enhanced" in url:
+                attempt_count["img-1"] += 1
+                if attempt_count["img-1"] == 1:
+                    return httpx.Response(500, text="Internal Server Error")
+                return httpx.Response(200, content=FAKE_IMAGE_BYTES)
+            return httpx.Response(404, json={"detail": "Not found"})
+
+        transport = httpx.MockTransport(retry_handler)
+        monkeypatch.setattr(state_module, "_http_client", httpx.AsyncClient(transport=transport))
+
+        resp = client.get(f"/orders/{VALID_ORDER_ID}/images?format=jpeg")
+        assert resp.status_code == 200
+        assert resp.headers["x-downloaded"] == "1"
+        assert resp.headers["x-failed"] == "0"
+        assert attempt_count["img-1"] == 2  # proves retry happened
+
+    def test_no_retry_on_client_error(self, monkeypatch):
+        """4xx errors are not retried — only server errors trigger retry."""
+        attempt_count = {"img-1": 0}
+
+        def no_retry_handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/orders/" in url and "/images" not in url.split("/orders/")[1]:
+                return httpx.Response(200, json={
+                    "order_id": VALID_ORDER_ID,
+                    "name": "Test",
+                    "images": [{"image_id": "img-1", "image_name": "photo"}],
+                })
+            if "/images/img-1/enhanced" in url:
+                attempt_count["img-1"] += 1
+                return httpx.Response(404, text="Not Found")
+            return httpx.Response(404, json={"detail": "Not found"})
+
+        transport = httpx.MockTransport(no_retry_handler)
+        monkeypatch.setattr(state_module, "_http_client", httpx.AsyncClient(transport=transport))
+
+        resp = client.get(f"/orders/{VALID_ORDER_ID}/images")
+        assert resp.status_code == 422  # all images failed
+        assert attempt_count["img-1"] == 1  # no retry on 4xx
+
+
+class TestNetworkErrors:
+    def test_network_error_on_order_retrieval_returns_502(self, monkeypatch):
+        """Network failure when retrieving the order returns 502."""
+        def error_handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("Connection refused")
+
+        transport = httpx.MockTransport(error_handler)
+        monkeypatch.setattr(state_module, "_http_client", httpx.AsyncClient(transport=transport))
+
+        resp = client.get(f"/orders/{VALID_ORDER_ID}/images")
+        assert resp.status_code == 502
+        assert "Failed to reach" in resp.json()["detail"]
+
+
+class TestUpstreamErrors:
+    def test_upstream_401_returns_401(self, monkeypatch):
+        monkeypatch.setattr(state_module, "_http_client", make_mock_client(
+            order_status=401,
+            order_response={"detail": "Unauthorized"},
+        ))
+        resp = client.get(f"/orders/{VALID_ORDER_ID}/images")
+        assert resp.status_code == 401
+
+    def test_upstream_502_returns_502(self, monkeypatch):
+        monkeypatch.setattr(state_module, "_http_client", make_mock_client(
+            order_status=500,
+            order_response={"detail": "Internal Server Error"},
+        ))
+        resp = client.get(f"/orders/{VALID_ORDER_ID}/images")
+        assert resp.status_code == 502
+
+    def test_too_many_images_returns_413(self, monkeypatch):
+        images = [
+            {"image_id": f"img-{i}", "image_name": f"photo_{i}"}
+            for i in range(101)
+        ]
+        monkeypatch.setattr(state_module, "_http_client", make_mock_client(
+            order_response={
+                "order_id": VALID_ORDER_ID,
+                "name": "Huge Order",
+                "images": images,
+            }
+        ))
+        resp = client.get(f"/orders/{VALID_ORDER_ID}/images")
+        assert resp.status_code == 413
+        assert "100" in resp.json()["detail"]
+
+
 class TestEdgeCases:
     def test_empty_order_returns_404(self, monkeypatch):
-        monkeypatch.setattr(app_module, "_http_client", make_mock_client(
+        monkeypatch.setattr(state_module, "_http_client", make_mock_client(
             order_response={
                 "order_id": VALID_ORDER_ID,
                 "name": "Empty Order",
@@ -177,7 +307,7 @@ class TestEdgeCases:
 
     def test_order_not_found(self, monkeypatch):
         not_found_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-        monkeypatch.setattr(app_module, "_http_client", make_mock_client(
+        monkeypatch.setattr(state_module, "_http_client", make_mock_client(
             order_status=404,
             order_response={"detail": "Not found"},
         ))
@@ -186,7 +316,7 @@ class TestEdgeCases:
         assert resp.status_code == 404
 
     def test_duplicate_image_names_deduplicated(self, monkeypatch):
-        monkeypatch.setattr(app_module, "_http_client", make_mock_client(
+        monkeypatch.setattr(state_module, "_http_client", make_mock_client(
             order_response={
                 "order_id": VALID_ORDER_ID,
                 "name": "Dupes",

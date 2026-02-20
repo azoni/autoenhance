@@ -196,9 +196,9 @@
 </div>
 <div class="byline" style="text-align:center;padding:14px 20px 0;font-size:0.78rem;color:#6c7086;line-height:1.5;">Charlton Smith &mdash; Technical Assessment <span style="margin:0 6px;opacity:0.4;">|</span> The <strong style="color:#222173;">Interview Submission</strong> tab is the deliverable. The rest is extra.<br><a href="https://github.com/azoni/autoenhance" target="_blank" style="display:inline-flex;align-items:center;gap:5px;margin-top:8px;padding:6px 14px;background:#222173;color:#fff;border-radius:6px;font-size:0.76rem;font-weight:600;text-decoration:none;transition:opacity 0.2s;"><svg height="14" width="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>View Source on GitHub</a></div>
 <div class="tabs">
-  <button class="tab-btn active" onclick="switchTab('interview')">Interview Submission</button>
-  <button class="tab-btn" onclick="switchTab('production')">Production Version</button>
-  <button class="tab-btn" onclick="switchTab('chat')">Questions?</button>
+  <button class="tab-btn active" onclick="switchTab('interview', event)">Interview Submission</button>
+  <button class="tab-btn" onclick="switchTab('production', event)">Production Version</button>
+  <button class="tab-btn" onclick="switchTab('chat', event)">Questions?</button>
 </div>
 <main>
 <div class="tab-panel active" id="tab-interview">
@@ -281,13 +281,13 @@
 
     <h3>Design decisions</h3>
     <ul class="handled">
-      <li><span class="check">&#10003;</span><span><strong>Concurrency</strong> &mdash; Downloads run in parallel via <code>asyncio.gather</code> with a semaphore (max 5) to balance speed vs. API rate limits.</span></li>
+      <li><span class="check">&#10003;</span><span><strong>Concurrency</strong> &mdash; Downloads run in parallel with a semaphore (max 5). Each image streams into the ZIP via <code>asyncio.as_completed</code> and is freed immediately &mdash; no waiting for the full batch.</span></li>
       <li><span class="check">&#10003;</span><span><strong>Partial failure</strong> &mdash; If some images fail (still processing, timed out), the ZIP includes what succeeded plus a <code>_download_report.txt</code>.</span></li>
       <li><span class="check">&#10003;</span><span><strong>Timeouts</strong> &mdash; 60s per image. Response headers report total / downloaded / failed counts.</span></li>
       <li><span class="check">&#10003;</span><span><strong>Response format</strong> &mdash; ZIP with <code>ZIP_STORED</code> (no compression) since JPEG/PNG/WebP are already compressed. Saves CPU with no size penalty.</span></li>
       <li><span class="check">&#10003;</span><span><strong>Redirects</strong> &mdash; Autoenhance returns 302 &rarr; asset server &rarr; S3. The client follows these transparently.</span></li>
       <li><span class="check">&#10003;</span><span><strong>Connection reuse</strong> &mdash; A shared <code>httpx.AsyncClient</code> is created once at startup via FastAPI lifespan. All requests reuse the same connection pool instead of creating one per request.</span></li>
-      <li><span class="check">&#10003;</span><span><strong>Memory</strong> &mdash; Image bytes are freed incrementally after writing to the ZIP (not held until the end). Orders capped at 100 images to bound peak memory usage.</span></li>
+      <li><span class="check">&#10003;</span><span><strong>Memory</strong> &mdash; Peak memory is bounded by the semaphore (max 5 in-flight), not the order size. The ZIP uses a <code>SpooledTemporaryFile</code> that spills to disk above 10 MB. Orders capped at 100 images as a safety limit.</span></li>
     </ul>
   </details>
 </div>
@@ -348,7 +348,7 @@
     <h3>Testing</h3>
     <ul class="handled">
       <li><span class="prod cur">&#9679;</span><span><strong>Manual E2E</strong> &mdash; Verified with a real 3-image order against the live API, locally and on Render.</span></li>
-      <li><span class="prod cur">&#9679;</span><span><strong>Unit tests</strong> &mdash; 13 tests via <code>httpx</code> mock transport. Covers validation, success/partial/total failure, edge cases, health, and UI.</span></li>
+      <li><span class="prod cur">&#9679;</span><span><strong>Unit tests</strong> &mdash; 20 tests via <code>httpx</code> mock transport. Covers validation, success/partial/total failure, retry logic, network errors, edge cases, health, and UI.</span></li>
       <li><span class="prod next">&#9675;</span><span><strong>Integration tests</strong> &mdash; Real API calls via <code>x-dev-mode</code> (no credits). Assert ZIP contents and structure.</span></li>
       <li><span class="prod next">&#9675;</span><span><strong>Load testing</strong> &mdash; Stress-test with large orders (50+ images) and concurrent callers to find memory and timeout limits.</span></li>
     </ul>
@@ -382,7 +382,7 @@
   <p class="prod-sub">Production-grade additions to the batch endpoint: input validation, unit tests, error tracking, and patterns for circuit breaking, caching, and rate limiting. The Interview tab is the primary submission.</p>
 
   <h3>UUID Input Validation <span class="pill done">IMPLEMENTED</span></h3>
-  <p class="file-ref">app.py &mdash; batch_download_order_images()</p>
+  <p class="file-ref">app/routes/batch.py</p>
   <pre><span class="cmt"># Validate order_id is a UUID before making upstream calls</span>
 <span class="kw">import</span> re
 uuid_pattern = re.compile(
@@ -397,7 +397,7 @@ uuid_pattern = re.compile(
   <div class="note">Rejects bad input before any upstream call. Prevents wasted round-trips and injection vectors.</div>
 
   <h3>Unit Test Suite <span class="pill done">IMPLEMENTED</span></h3>
-  <p class="file-ref">test_app.py &mdash; 13 tests, all passing</p>
+  <p class="file-ref">test_app.py &mdash; 20 tests, all passing</p>
   <div class="test-grid">
     <div class="test-item"><span class="pass">&#10003;</span> Invalid UUID rejected</div>
     <div class="test-item"><span class="pass">&#10003;</span> SQL injection blocked</div>
@@ -410,6 +410,13 @@ uuid_pattern = re.compile(
     <div class="test-item"><span class="pass">&#10003;</span> Empty order &rarr; 404</div>
     <div class="test-item"><span class="pass">&#10003;</span> Order not found</div>
     <div class="test-item"><span class="pass">&#10003;</span> Duplicate names deduped</div>
+    <div class="test-item"><span class="pass">&#10003;</span> Quality param passthrough</div>
+    <div class="test-item"><span class="pass">&#10003;</span> Retry on 5xx succeeds</div>
+    <div class="test-item"><span class="pass">&#10003;</span> No retry on 4xx</div>
+    <div class="test-item"><span class="pass">&#10003;</span> Network error &rarr; 502</div>
+    <div class="test-item"><span class="pass">&#10003;</span> Upstream 401 &rarr; 401</div>
+    <div class="test-item"><span class="pass">&#10003;</span> Upstream 500 &rarr; 502</div>
+    <div class="test-item"><span class="pass">&#10003;</span> Too many images &rarr; 413</div>
     <div class="test-item"><span class="pass">&#10003;</span> Health endpoint</div>
     <div class="test-item"><span class="pass">&#10003;</span> UI returns HTML</div>
   </div>
@@ -419,11 +426,11 @@ uuid_pattern = re.compile(
     <span class="kw">return</span> httpx.AsyncClient(transport=transport)
 
 <span class="cmt"># monkeypatch replaces the module-level shared client</span>
-monkeypatch.setattr(app_module, <span class="str">"_http_client"</span>, make_mock_client(...))</pre>
+monkeypatch.setattr(state_module, <span class="str">"_http_client"</span>, make_mock_client(...))</pre>
   <div class="note"><code>httpx.MockTransport</code> intercepts all outgoing HTTP &mdash; no real API calls, no credits consumed. Patches the shared <code>_http_client</code> instance per-test for full isolation.</div>
 
   <h3>Sentry Error Tracking <span class="pill done">IMPLEMENTED</span></h3>
-  <p class="file-ref">app.py &mdash; startup config</p>
+  <p class="file-ref">app/__init__.py</p>
   <pre><span class="kw">import</span> sentry_sdk
 
 <span class="cmt"># Only active when DSN is configured (no-op otherwise)</span>
@@ -450,7 +457,7 @@ monkeypatch.setattr(app_module, <span class="str">"_http_client"</span>, make_mo
   </div>
 
   <h3>Performance Optimizations <span class="pill done">IMPLEMENTED</span></h3>
-  <p class="file-ref">app.py &mdash; lifespan, ZIP creation, download loop</p>
+  <p class="file-ref">app/__init__.py, app/routes/batch.py</p>
   <pre><span class="cmt"># Shared HTTP client — created once at startup</span>
 <span class="dec">@asynccontextmanager</span>
 <span class="kw">async def</span> <span class="fn">_lifespan</span>(app: FastAPI):
@@ -471,7 +478,7 @@ MAX_IMAGES_PER_ORDER = <span class="num">100</span></pre>
   <div class="note">Connection reuse avoids per-request handshakes. ZIP_STORED saves CPU since JPEG/PNG/WebP are already compressed. Incremental freeing prevents 2x peak memory. 100-image cap bounds worst-case allocation.</div>
 
   <h3>Runtime Stats &amp; Monitoring <span class="pill done">IMPLEMENTED</span></h3>
-  <p class="file-ref">app.py &mdash; /api/stats endpoint + live stats bar</p>
+  <p class="file-ref">app/state.py, app/routes/monitoring.py</p>
   <pre><span class="cmt"># In-memory counters, incremented per request</span>
 _stats = {
     <span class="str">"orders_processed"</span>: <span class="num">0</span>,
@@ -487,7 +494,7 @@ _stats = {
   <div class="note">Live stats bar on the Interview tab auto-refreshes every 30s. Stats are also injected into the Azoni AI chatbot context so it can answer questions like &ldquo;How many images have you processed?&rdquo; with real numbers.</div>
 
   <h3>Security Hardening <span class="pill done">IMPLEMENTED</span></h3>
-  <p class="file-ref">app.py &mdash; middleware, auth, error handling</p>
+  <p class="file-ref">app/__init__.py, app/auth.py</p>
   <pre><span class="cmt"># CORS — restrict to known origins only</span>
 app.add_middleware(CORSMiddleware,
     allow_origins=[<span class="str">"https://autoenhance.onrender.com"</span>, ...],
@@ -501,16 +508,16 @@ response.headers[<span class="str">"Referrer-Policy"</span>] = <span class="str"
 <span class="cmt"># Admin token gates credit-consuming endpoints</span>
 _admin_token = os.getenv(<span class="str">"ADMIN_TOKEN"</span>) <span class="kw">or</span> secrets.token_urlsafe(<span class="num">32</span>)
 <span class="kw">def</span> <span class="fn">_require_admin</span>(request):
-    token = request.headers.get(<span class="str">"X-Admin-Token"</span>)
+    token = request.cookies.get(<span class="str">"_at"</span>) <span class="kw">or</span> request.headers.get(<span class="str">"X-Admin-Token"</span>)
     <span class="kw">if not</span> hmac.compare_digest(token, _admin_token): ...
 
 <span class="cmt"># Upstream errors logged, not leaked to clients</span>
 logger.error(<span class="str">"Upstream error: %d %s"</span>, status, text)
 <span class="kw">raise</span> HTTPException(<span class="num">502</span>, <span class="str">"Failed to retrieve order"</span>)</pre>
-  <div class="note">CORS blocks cross-origin abuse. Security headers prevent clickjacking, MIME sniffing, and referrer leaks. Admin token (timing-safe via <code>hmac.compare_digest</code>) protects <code>/api/create-order</code>, <code>/api/create-sample-order</code>, and <code>/sentry-debug</code> from unauthorized use. Upstream API error bodies are logged server-side but never exposed to clients.</div>
+  <div class="note">CORS blocks cross-origin abuse. Security headers prevent clickjacking, MIME sniffing, and referrer leaks. Admin token is set as an <code>httponly</code> cookie — not visible in page source or accessible to JavaScript. Timing-safe comparison via <code>hmac.compare_digest</code> protects <code>/api/create-order</code>, <code>/api/create-sample-order</code>, and <code>/sentry-debug</code> from unauthorized use. Upstream API error bodies are logged server-side but never exposed to clients.</div>
 
   <h3>Circuit Breaker Pattern <span class="pill new">NEXT STEP</span></h3>
-  <p class="file-ref">How it would integrate into app.py</p>
+  <p class="file-ref">How it would integrate into batch.py</p>
   <pre><span class="kw">class</span> <span class="fn">CircuitBreaker</span>:
     <span class="kw">def</span> <span class="fn">__init__</span>(self, failure_threshold=<span class="num">5</span>, reset_timeout=<span class="num">60</span>):
         self.failures = <span class="num">0</span>
@@ -771,13 +778,13 @@ async function createTestOrder() {
   for (const f of files) formData.append('files', f);
 
   try {
-    const resp = await fetch('/api/create-order', { method: 'POST', body: formData, headers: { 'X-Admin-Token': window.__AT || '' } });
+    const resp = await fetch('/api/create-order', { method: 'POST', body: formData });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.detail || 'HTTP ' + resp.status);
 
     document.getElementById('order_id').value = data.order_id;
     cs.className = 'ok';
-    cs.innerHTML = '<strong>' + data.order_id + '</strong><br>' + data.images_uploaded + ' image(s) uploaded.';
+    cs.innerHTML = '<strong>' + escHtml(data.order_id) + '</strong><br>' + data.images_uploaded + ' image(s) uploaded.';
     document.getElementById('create-section').removeAttribute('open');
     startPolling(data.order_id, data.images_uploaded);
   } catch (err) {
@@ -799,13 +806,13 @@ async function createSampleOrder() {
   stopPolling();
 
   try {
-    const resp = await fetch('/api/create-sample-order', { method: 'POST', headers: { 'X-Admin-Token': window.__AT || '' } });
+    const resp = await fetch('/api/create-sample-order', { method: 'POST' });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.detail || 'HTTP ' + resp.status);
 
     document.getElementById('order_id').value = data.order_id;
     cs.className = 'ok';
-    cs.innerHTML = '<strong>' + data.order_id + '</strong><br>' + data.images_uploaded + ' sample image(s) uploaded.';
+    cs.innerHTML = '<strong>' + escHtml(data.order_id) + '</strong><br>' + data.images_uploaded + ' sample image(s) uploaded.';
     document.getElementById('create-section').removeAttribute('open');
     startPolling(data.order_id, data.images_uploaded);
   } catch (err) {
@@ -840,11 +847,11 @@ async function createSampleOrder() {
   });
 })();
 
-function switchTab(tab) {
+function switchTab(tab, e) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   document.getElementById('tab-' + tab).classList.add('active');
-  event.target.classList.add('active');
+  e.target.classList.add('active');
   if (tab === 'production' && !window._sentryLoaded) {
     window._sentryLoaded = true;
     loadSentryIssues();
@@ -873,7 +880,7 @@ async function loadSentryIssues() {
       return '<li class="issue-item">' +
         '<span class="issue-level ' + level + '"></span>' +
         '<div class="issue-main">' +
-          '<div class="issue-title"><a href="' + (i.permalink || '#') + '" target="_blank">' + escHtml(i.title) + '</a></div>' +
+          '<div class="issue-title"><a href="' + encodeURI(i.permalink || '#') + '" target="_blank">' + escHtml(i.title) + '</a></div>' +
           '<div class="issue-culprit">' + escHtml(i.culprit || '') + '</div>' +
         '</div>' +
         '<div class="issue-meta">' +
@@ -895,7 +902,7 @@ async function triggerSentryTest() {
   s.style.color = '#991b1b';
   s.textContent = 'Triggering test error...';
   try {
-    await fetch('/sentry-debug', { headers: { 'X-Admin-Token': window.__AT || '' } });
+    await fetch('/sentry-debug');
   } catch(e) {}
   s.textContent = 'Test error sent to Sentry! Refresh in a few seconds to see it below.';
   s.style.background = '#ecfdf5';
@@ -1080,7 +1087,11 @@ function renderStats(data) {
 
 async function refreshStats() {
   const data = await fetchStats();
-  if (data) renderStats(data);
+  if (data) {
+    renderStats(data);
+  } else {
+    document.getElementById('stats-uptime').textContent = 'Unavailable';
+  }
 }
 
 refreshStats();

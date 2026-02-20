@@ -63,8 +63,8 @@ Technical test — build a batch endpoint to download all images for an order.
 - Regex check at the top of the batch endpoint — rejects non-UUID order IDs with 400 before any upstream call.
 - Prevents wasted API round-trips and potential injection vectors.
 
-**Unit test suite (`test_app.py` — 13 tests):**
-- Covers: input validation (invalid UUID, SQL injection, empty ID, valid UUID passthrough), successful ZIP downloads (content + filenames), partial failure with report, total failure → 422, empty order → 404, order not found, duplicate filename deduplication, health check, UI rendering.
+**Unit test suite (`test_app.py` — 20 tests):**
+- Covers: input validation (invalid UUID, SQL injection, empty ID, valid UUID passthrough), successful ZIP downloads (content + filenames), partial failure with report, total failure → 422, query param passthrough, retry on 5xx (verifies retry count), no retry on 4xx, network error → 502, upstream 401/502, order too large → 413, empty order → 404, order not found, duplicate filename deduplication, health check, UI rendering.
 - Uses `httpx.MockTransport` — no real API calls, no credits consumed.
 - Each test creates its own mock client via `monkeypatch` for full isolation.
 
@@ -108,6 +108,49 @@ Technical test — build a batch endpoint to download all images for an order.
 
 ---
 
+### 6. Code Architecture & Production Hardening
+
+**Split `app.py` into a multi-file package (`app/`):**
+- Monolithic 660-line `app.py` → 8-file package with clear separation of concerns.
+- `app/__init__.py` — app factory, middleware, lifespan, Sentry init.
+- `app/config.py` — constants (API_BASE, limits, regex, maps, paths).
+- `app/state.py` — shared mutable state (`Stats` class, HTTP client, helpers).
+- `app/auth.py` — admin token generation and `require_admin()` guard.
+- `app/routes/batch.py` — core deliverable (batch download endpoint).
+- `app/routes/orders.py` — order creation endpoints for testing.
+- `app/routes/monitoring.py` — health, stats, Sentry integration.
+- `app/routes/ui.py` — web UI serving and favicon.
+- `uvicorn app:app` still works — Python resolves `app/__init__.py:app`.
+
+**Thread-safe `Stats` class:**
+- Replaced raw `_stats` dict + external `asyncio.Lock` with a `Stats` class that encapsulates the lock internally.
+- Mutation methods (`record_batch_complete`, `record_batch_total_failure`, `record_order_created`) each acquire the lock automatically.
+- `snapshot()` method returns a clean dict for API responses — callers don't touch internals.
+
+**Retry logic with backoff:**
+- Image downloads retry once on transient failures (5xx, timeout) with a 1-second backoff.
+- Client errors (4xx) are not retried — no point retrying a deterministic failure.
+- Tested: mock handler returns 500 on first call, 200 on retry; test asserts attempt count == 2.
+
+**Network error handling:**
+- Order retrieval wrapped in `try/except httpx.HTTPError` → returns 502 with clear message.
+- Tested: mock transport raises `httpx.ConnectError`; test asserts 502 response.
+
+**Security hardening:**
+- Admin token via httponly cookie (not embedded in page source).
+- `/api/stats` returns `recent_errors` only to authenticated admins.
+- File upload size checked via `file.size` before reading into memory.
+- Security headers middleware (nosniff, DENY framing, referrer policy, permissions policy).
+- `hmac.compare_digest` for timing-safe token comparison.
+- Sentry disabled in test environment via `SENTRY_DSN=""`.
+
+**Streaming memory model:**
+- Replaced `asyncio.gather` (buffered all images in memory) with `asyncio.as_completed` — each image is written to the ZIP and freed as soon as it finishes downloading.
+- Peak memory is now bounded by the semaphore (max 5 in-flight downloads), not the total order size.
+- ZIP uses `SpooledTemporaryFile` — small ZIPs stay in memory; large ones (>10 MB) spill to disk automatically.
+
+---
+
 ### Architecture Overview
 
 ```
@@ -132,8 +175,15 @@ Technical test — build a batch endpoint to download all images for an order.
 **Files:**
 | File | Purpose |
 |------|---------|
-| `app.py` | FastAPI app — batch endpoint, UI, create-order helpers, Sentry proxy |
-| `test_app.py` | 13 unit tests with httpx MockTransport |
+| `app/__init__.py` | FastAPI app factory, middleware, lifespan, Sentry init |
+| `app/config.py` | Constants: API base URL, limits, regex, content-type maps |
+| `app/state.py` | `Stats` class, HTTP client singleton, API key helper |
+| `app/auth.py` | Admin token generation and `require_admin()` guard |
+| `app/routes/batch.py` | Core deliverable — `GET /orders/{id}/images` |
+| `app/routes/orders.py` | `POST /api/create-order`, `POST /api/create-sample-order` |
+| `app/routes/monitoring.py` | `/health`, `/api/stats`, `/sentry-debug`, Sentry proxy |
+| `app/routes/ui.py` | `GET /` (web UI), `GET /favicon.ico` |
+| `test_app.py` | 20 unit tests with httpx MockTransport |
 | `setup_test_order.py` | CLI helper to create test orders by uploading local images |
 | `requirements.txt` | Pinned Python dependencies |
 | `render.yaml` | Render deployment config |
