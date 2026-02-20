@@ -921,6 +921,7 @@ function escHtml(s) {
 
 // ===== Azoni AI Chat =====
 const AZONI_API = 'https://azoni.ai/.netlify/functions/chat';
+const chatSessionId = 'ae_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
 let chatHistory = [];
 
 function askChip(btn) {
@@ -995,6 +996,7 @@ async function sendChat() {
       mode: 'professional',
       model: 'openai/gpt-4o-mini',
       context: 'autoenhance-interview',
+      sessionId: chatSessionId,
       liveStats: stats ? formatStatsForContext(stats) : ''
     });
 
