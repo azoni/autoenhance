@@ -9,8 +9,77 @@ import time
 import httpx
 from fastapi import HTTPException
 
+from app.config import MAX_CONCURRENT_DOWNLOADS, ZIP_CACHE_TTL_SECONDS
+
 # Shared HTTP client — created once at startup, reuses connections across requests
 _http_client: httpx.AsyncClient | None = None
+
+# ── Global semaphore ──────────────────────────────────────────────────────────
+# Shared across all concurrent requests so the total upstream connection count
+# to Autoenhance is capped at MAX_CONCURRENT_DOWNLOADS, not per-request.
+_download_semaphore: asyncio.Semaphore | None = None
+
+
+def get_semaphore() -> asyncio.Semaphore:
+    global _download_semaphore
+    if _download_semaphore is None:
+        _download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
+    return _download_semaphore
+
+
+# ── ZIP cache ─────────────────────────────────────────────────────────────────
+# TTL dict keyed on (order_id, format, quality, preview, dev_mode).
+# Disabled during pytest runs (PYTEST_CURRENT_TEST is set automatically by pytest).
+_zip_cache: dict[tuple, dict] = {}
+
+
+def get_cached_zip(key: tuple) -> dict | None:
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return None
+    entry = _zip_cache.get(key)
+    if entry and time.time() - entry["cached_at"] < ZIP_CACHE_TTL_SECONDS:
+        return entry
+    _zip_cache.pop(key, None)
+    return None
+
+
+def set_cached_zip(key: tuple, zip_bytes: bytes, filename: str, headers: dict) -> None:
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return
+    _zip_cache[key] = {
+        "zip_bytes": zip_bytes,
+        "filename": filename,
+        "headers": headers,
+        "cached_at": time.time(),
+    }
+
+
+# ── Job store ─────────────────────────────────────────────────────────────────
+# In-memory store for async batch jobs. Jobs expire after ZIP_CACHE_TTL_SECONDS.
+_jobs: dict[str, dict] = {}
+
+
+def get_job(job_id: str) -> dict | None:
+    entry = _jobs.get(job_id)
+    if not entry:
+        return None
+    if time.time() - entry["created_at"] > ZIP_CACHE_TTL_SECONDS:
+        _jobs.pop(job_id, None)
+        return None
+    return entry
+
+
+def set_job(job_id: str, data: dict) -> None:
+    # Evict expired jobs on write to prevent unbounded growth
+    expired = [k for k, v in list(_jobs.items()) if time.time() - v["created_at"] > ZIP_CACHE_TTL_SECONDS]
+    for k in expired:
+        _jobs.pop(k, None)
+    _jobs[job_id] = {**data, "created_at": time.time()}
+
+
+def update_job(job_id: str, updates: dict) -> None:
+    if job_id in _jobs:
+        _jobs[job_id].update(updates)
 
 
 class Stats:

@@ -27,7 +27,7 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from app.config import BASE_DIR  # noqa: E402
 from app import state  # noqa: E402
-from app.routes import batch, monitoring, orders, ui  # noqa: E402
+from app.routes import batch, jobs, monitoring, orders, ui  # noqa: E402
 
 # Sentry error tracking — only active when DSN is configured
 if os.getenv("SENTRY_DSN"):
@@ -63,16 +63,22 @@ app = FastAPI(
 )
 
 # ── CORS ──────────────────────────────────────────────────────────────────
-_ALLOWED_ORIGINS = [
-    "https://autoenhance.onrender.com",
-    "http://localhost:8000",
-    "http://127.0.0.1:8000",
-]
+# Override via ALLOWED_ORIGINS env var (comma-separated list of origins).
+_origins_env = os.getenv("ALLOWED_ORIGINS", "")
+_ALLOWED_ORIGINS = (
+    [o.strip() for o in _origins_env.split(",") if o.strip()]
+    if _origins_env
+    else [
+        "https://autoenhance.onrender.com",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ]
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
     allow_methods=["GET", "POST", "HEAD", "OPTIONS"],
-    allow_headers=["Content-Type", "X-Admin-Token"],
+    allow_headers=["Content-Type", "X-Admin-Token", "X-API-Key"],
 )
 
 
@@ -90,6 +96,7 @@ app.add_middleware(_SecurityHeadersMiddleware)
 
 # ── Include routers ──────────────────────────────────────────────────────
 app.include_router(batch.router)
+app.include_router(jobs.router)
 app.include_router(orders.router)
 app.include_router(monitoring.router)
 app.include_router(ui.router)

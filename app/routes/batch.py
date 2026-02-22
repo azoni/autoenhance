@@ -5,6 +5,7 @@ GET /orders/{order_id}/images
 """
 
 import asyncio
+import io
 import logging
 import os
 import tempfile
@@ -12,80 +13,45 @@ import zipfile
 from typing import Literal, Optional
 
 import httpx
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.exceptions import HTTPException
 from fastapi.responses import StreamingResponse
 
+from app.auth import require_service_key
 from app.config import (
     API_BASE,
     EXT_MAP,
-    MAX_CONCURRENT_DOWNLOADS,
     MAX_IMAGES_PER_ORDER,
+    MAX_ZIP_SIZE_BYTES,
     UUID_RE,
 )
-from app.state import stats, get_api_key, get_http_client
+from app.state import (
+    get_api_key,
+    get_cached_zip,
+    get_http_client,
+    get_semaphore,
+    set_cached_zip,
+    stats,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-@router.get("/orders/{order_id}/images")
-async def batch_download_order_images(
+async def _run_batch(
     order_id: str,
-    preview: bool = Query(
-        True,
-        description=(
-            "If true, downloads free preview-quality images. "
-            "Set to false for full-quality downloads (consumes credits)."
-        ),
-    ),
-    image_format: Literal["jpeg", "png", "webp", "avif", "jxl"] = Query(
-        "jpeg",
-        alias="format",
-        description="Output image format.",
-    ),
-    quality: Optional[int] = Query(
-        None,
-        description="Image quality (1-90). Leave blank for API default.",
-        ge=1,
-        le=90,
-    ),
-    dev_mode: bool = Query(
-        False,
-        description=(
-            "Enable development mode to test without consuming credits. "
-            "Output images will have a watermark."
-        ),
-    ),
-):
+    image_format: str,
+    quality: Optional[int],
+    preview: bool,
+    dev_mode: bool,
+) -> tuple[bytes, str, dict]:
     """
-    Download all enhanced images for an order as a ZIP archive.
+    Download all enhanced images for an order and bundle them into a ZIP.
 
-    **Workflow:**
-    1. Retrieves the order from the Autoenhance API.
-    2. Downloads each enhanced image concurrently (up to 5 at a time).
-    3. Bundles all successfully downloaded images into a ZIP file.
-
-    **Partial failure handling:**
-    If some images fail (e.g. still processing), the ZIP will include a
-    `_download_report.txt` listing each failed image ID and the reason.
-    Response headers `X-Downloaded` and `X-Failed` indicate the counts.
-
-    To recover failed images, either:
-    - **Retry the batch** — already-processed images download instantly.
-    - **Fetch individually** via `GET /v3/images/{image_id}/enhanced`
-      using the image IDs from the download report.
-
-    If *all* images fail, a 422 error is returned instead of a ZIP.
+    Returns (zip_bytes, filename, response_headers).
+    Raises HTTPException on failure.
     """
-    # Validate order_id is a UUID before making upstream calls
-    if not UUID_RE.match(order_id):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid order ID format. Expected a UUID, got: '{order_id}'",
-        )
-
     api_key = get_api_key()
     headers = {"x-api-key": api_key}
     if dev_mode:
@@ -115,7 +81,10 @@ async def batch_download_order_images(
             status_code=401, detail="Invalid or missing API key."
         )
     if order_resp.status_code != 200:
-        logger.error("Upstream error retrieving order %s: %d %s", order_id, order_resp.status_code, order_resp.text)
+        logger.error(
+            "Upstream error retrieving order %s: %d %s",
+            order_id, order_resp.status_code, order_resp.text,
+        )
         raise HTTPException(
             status_code=502,
             detail=f"Failed to retrieve order (upstream returned {order_resp.status_code}).",
@@ -146,7 +115,8 @@ async def batch_download_order_images(
     )
 
     # ---- Step 2: Download each enhanced image concurrently ----
-    semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
+    # Global semaphore caps total upstream connections across all concurrent requests.
+    semaphore = get_semaphore()
 
     async def download_image(image: dict) -> dict:
         image_id = image.get("image_id") or image.get("id")
@@ -194,7 +164,9 @@ async def batch_download_order_images(
                 if resp.status_code < 500:
                     break  # don't retry client errors (4xx)
                 if attempt == 0:
-                    logger.warning("Server error %d for %s, retrying…", resp.status_code, image_id)
+                    logger.warning(
+                        "Server error %d for %s, retrying…", resp.status_code, image_id
+                    )
                     await asyncio.sleep(1)
 
             logger.warning("Failed to download image %s: %s", image_id, last_error)
@@ -206,15 +178,15 @@ async def batch_download_order_images(
             }
 
     # ---- Step 3: Stream results into ZIP as downloads complete ----
-    # Using as_completed so each image is written to the ZIP and freed
-    # immediately.  Peak memory is bounded by the semaphore (max 5
-    # in-flight downloads) rather than the total order size.
+    # Using as_completed so each image is written to the ZIP and freed immediately.
+    # Peak memory is bounded by the semaphore (max 5 in-flight) not the order size.
     ext = EXT_MAP.get(image_format, image_format)
 
     zip_buffer = tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024)
     downloaded = 0
     failed: list[dict] = []
     seen: set[str] = set()
+    total_zip_bytes = 0
 
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_STORED) as zf:
         for coro in asyncio.as_completed(
@@ -225,6 +197,16 @@ async def batch_download_order_images(
             if result["content"] is None:
                 failed.append(result)
                 continue
+
+            total_zip_bytes += len(result["content"])
+            if total_zip_bytes > MAX_ZIP_SIZE_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=(
+                        f"Order ZIP exceeds the "
+                        f"{MAX_ZIP_SIZE_BYTES // (1024 * 1024)} MB size limit."
+                    ),
+                )
 
             base = os.path.splitext(result["name"])[0]
             unique = base
@@ -272,28 +254,106 @@ async def batch_download_order_images(
             zf.writestr("_download_report.txt", "\n".join(report_lines))
 
     zip_buffer.seek(0)
+    zip_bytes = zip_buffer.read()
+    zip_buffer.close()
 
-    # Sanitise the order name for use as a filename
     safe_name = "".join(
         c if c.isalnum() or c in "-_ " else "_" for c in order_name
     )
+    filename = f"{safe_name}_images.zip"
 
     await stats.record_batch_complete(
         downloaded=downloaded, failed=len(failed),
         order_id=order_id, total=len(images),
     )
 
-    logger.info(
-        "Returning ZIP: %d downloaded, %d failed", downloaded, len(failed)
+    logger.info("ZIP ready: %d downloaded, %d failed", downloaded, len(failed))
+
+    response_headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "X-Total-Images": str(len(images)),
+        "X-Downloaded": str(downloaded),
+        "X-Failed": str(len(failed)),
+    }
+
+    return zip_bytes, filename, response_headers
+
+
+@router.get("/orders/{order_id}/images")
+async def batch_download_order_images(
+    order_id: str,
+    preview: bool = Query(
+        True,
+        description=(
+            "If true, downloads free preview-quality images. "
+            "Set to false for full-quality downloads (consumes credits)."
+        ),
+    ),
+    image_format: Literal["jpeg", "png", "webp", "avif", "jxl"] = Query(
+        "jpeg",
+        alias="format",
+        description="Output image format.",
+    ),
+    quality: Optional[int] = Query(
+        None,
+        description="Image quality (1-90). Leave blank for API default.",
+        ge=1,
+        le=90,
+    ),
+    dev_mode: bool = Query(
+        False,
+        description=(
+            "Enable development mode to test without consuming credits. "
+            "Output images will have a watermark."
+        ),
+    ),
+    _: None = Depends(require_service_key),
+):
+    """
+    Download all enhanced images for an order as a ZIP archive.
+
+    **Workflow:**
+    1. Retrieves the order from the Autoenhance API.
+    2. Downloads each enhanced image concurrently (global semaphore, max 5 total).
+    3. Bundles all successfully downloaded images into a ZIP file.
+
+    **Partial failure handling:**
+    If some images fail (e.g. still processing), the ZIP will include a
+    `_download_report.txt` listing each failed image ID and the reason.
+    Response headers `X-Downloaded` and `X-Failed` indicate the counts.
+
+    To recover failed images, either:
+    - **Retry the batch** — already-processed images download instantly.
+    - **Fetch individually** via `GET /v3/images/{image_id}/enhanced`
+      using the image IDs from the download report.
+
+    If *all* images fail, a 422 error is returned instead of a ZIP.
+
+    **For large orders**, use `POST /orders/{order_id}/jobs` to avoid timeouts.
+    """
+    if not UUID_RE.match(order_id):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid order ID format. Expected a UUID, got: '{order_id}'",
+        )
+
+    cache_key = (order_id, image_format, quality, preview, dev_mode)
+    cached = get_cached_zip(cache_key)
+    if cached:
+        logger.info("Cache hit for order %s", order_id)
+        return StreamingResponse(
+            io.BytesIO(cached["zip_bytes"]),
+            media_type="application/zip",
+            headers=cached["headers"],
+        )
+
+    zip_bytes, filename, response_headers = await _run_batch(
+        order_id, image_format, quality, preview, dev_mode
     )
+    set_cached_zip(cache_key, zip_bytes, filename, response_headers)
 
     return StreamingResponse(
-        zip_buffer,
+        io.BytesIO(zip_bytes),
         media_type="application/zip",
-        headers={
-            "Content-Disposition": f'attachment; filename="{safe_name}_images.zip"',
-            "X-Total-Images": str(len(images)),
-            "X-Downloaded": str(downloaded),
-            "X-Failed": str(len(failed)),
-        },
+        headers=response_headers,
     )

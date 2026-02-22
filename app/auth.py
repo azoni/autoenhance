@@ -27,3 +27,20 @@ def require_admin(request: Request) -> None:
     )
     if not token or not hmac.compare_digest(token, admin_token):
         raise HTTPException(status_code=403, detail="Forbidden — invalid or missing admin token.")
+
+
+# Set SERVICE_API_KEY in env to require an X-API-Key header on the batch endpoint.
+# If unset, the endpoint is open (backward compatible).
+_service_key: str | None = os.getenv("SERVICE_API_KEY")
+
+
+def require_service_key(request: Request) -> None:
+    """Raise 401 if SERVICE_API_KEY is configured and the request doesn't carry a valid key."""
+    if not _service_key:
+        return  # not configured → endpoint is open
+    token = (
+        request.headers.get("X-API-Key")
+        or request.query_params.get("api_key")
+    )
+    if not token or not hmac.compare_digest(token, _service_key):
+        raise HTTPException(status_code=401, detail="Invalid or missing API key.")

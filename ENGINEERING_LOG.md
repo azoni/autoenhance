@@ -47,6 +47,7 @@ Technical test — build a batch endpoint to download all images for an order.
 - **Memory**: images buffered in-memory before ZIP creation; acceptable for typical orders (<50 images).
 - **Timeouts**: 60s per-image timeout via httpx; for very large orders, an async job pattern would be needed.
 - **Redirects**: Autoenhance returns 302 → asset server → S3; `follow_redirects=True` handles this transparently.
+- **CDN**: A CDN reduces geographic latency (client ↔ edge RTT) and would help users far from the Render datacenter. However, the dominant cost is the upstream leg — downloading images from Autoenhance's API — which a CDN doesn't shorten. The meaningful CDN win would be **caching ZIP responses**: a repeat request for the same `order_id` + params would be served from the edge instantly, skipping the upstream downloads entirely. To enable: add `Cache-Control: public, max-age=<TTL>` to the ZIP response and front the service with Cloudflare or similar. Currently no cache headers are set, so CDNs pass through unconditionally.
 
 **Assumptions surfaced on-page:**
 - Downstream of upload pipeline — we don't control when/how images are uploaded.
