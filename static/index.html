@@ -650,6 +650,8 @@ function buildParams() {
 async function downloadZip(orderId) {
   btn.disabled = true;
   btn.textContent = 'Downloading...';
+  pollStatus.className = '';
+  pollStatus.style.display = 'none';
   status.className = 'info';
   status.style.display = 'block';
   status.textContent = 'Fetching images from Autoenhance…';
@@ -718,14 +720,20 @@ function startPolling(orderId, imageCount) {
       const resp = await fetch(`/orders/${orderId}/images?${buildParams()}`);
 
       if (resp.ok) {
-        // Ready! Auto-download.
-        stopPolling();
         const total = resp.headers.get('X-Total-Images') || '?';
         const downloaded = resp.headers.get('X-Downloaded') || '?';
         const failed = resp.headers.get('X-Failed') || '0';
 
+        // If some images failed and we haven't exhausted attempts, keep waiting
+        if (parseInt(failed) > 0 && attempts < maxAttempts) {
+          pollStatus.innerHTML = '<span class="spinner"></span>' + downloaded + '/' + total + ' ready so far… waiting for the rest (' + elapsed + 's elapsed)';
+          return;
+        }
+
+        // All images ready, or max attempts reached — download
+        stopPolling();
         pollStatus.className = 'ready';
-        pollStatus.innerHTML = 'All images ready! Downloading ZIP…';
+        pollStatus.innerHTML = 'Downloading ZIP…';
 
         const blob = await resp.blob();
         const url = URL.createObjectURL(blob);
@@ -735,7 +743,11 @@ function startPolling(orderId, imageCount) {
         a.click();
         URL.revokeObjectURL(url);
 
-        pollStatus.innerHTML = 'Done — ' + downloaded + '/' + total + ' images downloaded.' + (parseInt(failed) > 0 ? ' ' + failed + ' failed — see report in ZIP.' : '');
+        if (parseInt(failed) > 0) {
+          pollStatus.innerHTML = 'Done — ' + downloaded + '/' + total + ' images downloaded. ' + failed + ' failed — see report in ZIP.';
+        } else {
+          pollStatus.innerHTML = 'Done — ' + downloaded + '/' + total + ' images downloaded.';
+        }
         btn.style.display = '';
         btn.textContent = 'Download Again';
         return;

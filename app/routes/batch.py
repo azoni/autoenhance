@@ -220,9 +220,6 @@ async def _run_batch(
             downloaded += 1
 
         if not downloaded:
-            await stats.record_batch_total_failure(
-                failed=len(failed), order_id=order_id,
-            )
             raise HTTPException(
                 status_code=422,
                 detail={
