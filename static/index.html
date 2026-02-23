@@ -306,7 +306,7 @@
     <h3>Possible extensions</h3>
     <ul class="handled">
       <li><span class="check">&#8594;</span><span><strong>Poll-until-ready</strong> &mdash; A <code>wait=true</code> param that retries until all images are processed before downloading.</span></li>
-      <li><span class="check">&#8594;</span><span><strong>Async job pattern</strong> &mdash; <code>POST /jobs</code> starts the download and returns a job ID; <code>GET /jobs/{id}</code> returns status or the ZIP.</span></li>
+      <li><span class="check">&#10003;</span><span><strong>Async job pattern</strong> &mdash; <code>POST /orders/{id}/jobs</code> starts the download and returns a job ID immediately (202); poll <code>GET /jobs/{id}</code> for status; fetch <code>GET /jobs/{id}/download</code> when ready. Sidesteps Render's 30s response timeout for large orders.</span></li>
       <li><span class="check">&#8594;</span><span><strong>Webhook integration</strong> &mdash; Auto-trigger the batch download when Autoenhance signals an order is complete.</span></li>
     </ul>
   </details>
@@ -342,7 +342,7 @@
       <li><span class="prod cur">&#9679;</span><span><strong>API key isolation</strong> &mdash; Stored in env var, never committed. <code>.gitignore</code> excludes <code>.env</code>.</span></li>
       <li><span class="prod cur">&#9679;</span><span><strong>Input validation</strong> &mdash; Order ID validated as UUID before any upstream call. Malformed input returns 400 immediately.</span></li>
       <li><span class="prod next">&#9675;</span><span><strong>Rate limiting</strong> &mdash; Each batch call fans out to N upstream requests. Add per-IP throttling to prevent quota exhaustion.</span></li>
-      <li><span class="prod next">&#9675;</span><span><strong>Authentication</strong> &mdash; Endpoint is currently public. Add API key or OAuth to control who triggers downloads (and consumes credits).</span></li>
+      <li><span class="prod cur">&#9679;</span><span><strong>Authentication</strong> &mdash; Optional <code>SERVICE_API_KEY</code> env var. When set, batch and job endpoints require an <code>X-API-Key</code> header (timing-safe comparison). Leave unset for open access.</span></li>
     </ul>
 
     <h3>Testing</h3>
@@ -357,7 +357,7 @@
     <ul class="handled">
       <li><span class="prod cur">&#9679;</span><span><strong>Health check</strong> &mdash; <code>/health</code> reports status and API key config. Monitored by UptimeRobot.</span></li>
       <li><span class="prod next">&#9675;</span><span><strong>Graceful degradation</strong> &mdash; Return 503 with Retry-After when Autoenhance is down, instead of timing out. Circuit breaker pattern.</span></li>
-      <li><span class="prod next">&#9675;</span><span><strong>Caching</strong> &mdash; Enhanced images are immutable. Cache by image ID + format + quality to skip redundant downloads.</span></li>
+      <li><span class="prod cur">&#9679;</span><span><strong>Caching</strong> &mdash; In-process ZIP cache keyed by <code>(order_id, format, quality, preview, dev_mode)</code> with a 1-hour TTL. Repeat requests for the same order are served instantly without hitting the upstream API.</span></li>
       <li><span class="prod next">&#9675;</span><span><strong>CI/CD</strong> &mdash; Auto-deploys from <code>main</code> via Render. Add a test gate and staging environment.</span></li>
     </ul>
   </details>
@@ -545,25 +545,26 @@ logger.error(<span class="str">"Upstream error: %d %s"</span>, status, text)
         headers={<span class="str">"Retry-After"</span>: <span class="str">"60"</span>})</pre>
   <div class="note">Prevents cascading failures. After 5 consecutive errors, returns 503 immediately for 60s instead of letting every request time out.</div>
 
-  <h3>Response Caching <span class="pill new">NEXT STEP</span></h3>
-  <p class="file-ref">Image-level cache by (image_id, format, quality)</p>
-  <pre><span class="kw">from</span> functools <span class="kw">import</span> lru_cache
-<span class="kw">from</span> hashlib <span class="kw">import</span> sha256
+  <h3>Response Caching <span class="pill done">IMPLEMENTED</span></h3>
+  <p class="file-ref">app/state.py — ZIP-level cache by (order_id, format, quality, preview, dev_mode)</p>
+  <pre><span class="cmt"># state.py — TTL dict, bypassed automatically during pytest</span>
+_zip_cache: dict[tuple, dict] = {}
 
-<span class="cmt"># Enhanced images are immutable once processed</span>
-image_cache: dict[str, bytes] = {}
+<span class="kw">def</span> <span class="fn">get_cached_zip</span>(key: tuple) -> dict | <span class="kw">None</span>:
+    entry = _zip_cache.get(key)
+    <span class="kw">if</span> entry <span class="kw">and</span> time.time() - entry[<span class="str">"cached_at"</span>] &lt; ZIP_CACHE_TTL_SECONDS:
+        <span class="kw">return</span> entry
+    _zip_cache.pop(key, <span class="kw">None</span>)
+    <span class="kw">return None</span>
 
-<span class="kw">def</span> <span class="fn">cache_key</span>(image_id: str, fmt: str, quality: int | None) -> str:
-    <span class="kw">return</span> <span class="str">f"{image_id}:{fmt}:{quality or 'default'}"</span>
-
-<span class="kw">async def</span> <span class="fn">download_image</span>(image: dict) -> dict:
-    key = cache_key(image_id, image_format, quality)
-    <span class="kw">if</span> key <span class="kw">in</span> image_cache:
-        logger.info(<span class="str">"Cache HIT for %s"</span>, image_id)
-        <span class="kw">return</span> {<span class="str">"content"</span>: image_cache[key], ...}
-    <span class="cmt"># ... download as before ...</span>
-    image_cache[key] = resp.content  <span class="cmt"># store on success</span></pre>
-  <div class="note">Enhanced images are immutable once processed, so caching avoids redundant downloads. In production, swap the in-memory dict for Redis or Memcached with a TTL.</div>
+<span class="cmt"># batch.py — check before downloading, store after</span>
+cache_key = (order_id, image_format, quality, preview, dev_mode)
+cached = get_cached_zip(cache_key)
+<span class="kw">if</span> cached:
+    <span class="kw">return</span> StreamingResponse(io.BytesIO(cached[<span class="str">"zip_bytes"</span>]), ...)
+zip_bytes, filename, headers = <span class="kw">await</span> _run_batch(...)
+set_cached_zip(cache_key, zip_bytes, filename, headers)</pre>
+  <div class="note">ZIP responses are cached in-process for 1 hour. A repeat request for the same order + params is served instantly without touching the upstream API. Cache is disabled during pytest (via <code>PYTEST_CURRENT_TEST</code>) to prevent test cross-contamination. In production, swap for Redis with a TTL.</div>
 
   <h3>Rate Limiting Our Endpoint <span class="pill new">NEXT STEP</span></h3>
   <pre><span class="cmt"># Using slowapi (built on limits library)</span>
@@ -578,23 +579,27 @@ limiter = Limiter(key_func=get_remote_address)
     ...</pre>
   <div class="note">Each batch call fans out to N upstream requests. Without throttling, one caller could exhaust API quotas. 10 req/min per IP is a reasonable default.</div>
 
-  <h3>Async Job Pattern for Large Orders <span class="pill new">NEXT STEP</span></h3>
-  <pre><span class="cmt"># POST /jobs &mdash; start download, return immediately</span>
-<span class="dec">@app.post</span>(<span class="str">"/jobs"</span>)
-<span class="kw">async def</span> <span class="fn">create_job</span>(order_id: str):
-    job_id = str(uuid4())
-    jobs[job_id] = {<span class="str">"status"</span>: <span class="str">"processing"</span>, <span class="str">"order_id"</span>: order_id}
-    asyncio.create_task(process_job(job_id, order_id))
-    <span class="kw">return</span> {<span class="str">"job_id"</span>: job_id, <span class="str">"status"</span>: <span class="str">"processing"</span>}
+  <h3>Async Job Pattern for Large Orders <span class="pill done">IMPLEMENTED</span></h3>
+  <p class="file-ref">app/routes/jobs.py</p>
+  <pre><span class="cmt"># 1. POST /orders/{order_id}/jobs &mdash; returns 202 immediately</span>
+<span class="dec">@router.post</span>(<span class="str">"/orders/{order_id}/jobs"</span>, status_code=<span class="num">202</span>)
+<span class="kw">async def</span> <span class="fn">create_batch_job</span>(order_id, background_tasks, ...):
+    job_id = str(uuid.uuid4())
+    set_job(job_id, {<span class="str">"status"</span>: <span class="str">"processing"</span>, ...})
+    background_tasks.add_task(_process_job, job_id, order_id, ...)
+    <span class="kw">return</span> {<span class="str">"job_id"</span>: job_id}
 
-<span class="cmt"># GET /jobs/{job_id} &mdash; poll for result</span>
-<span class="dec">@app.get</span>(<span class="str">"/jobs/{job_id}"</span>)
-<span class="kw">async def</span> <span class="fn">get_job</span>(job_id: str):
-    job = jobs.get(job_id)
-    <span class="kw">if</span> job[<span class="str">"status"</span>] == <span class="str">"complete"</span>:
-        <span class="kw">return</span> StreamingResponse(job[<span class="str">"zip_data"</span>], ...)
-    <span class="kw">return</span> {<span class="str">"status"</span>: job[<span class="str">"status"</span>], <span class="str">"progress"</span>: job.get(<span class="str">"progress"</span>)}</pre>
-  <div class="note">Large orders (50+ images) risk HTTP timeouts. The job pattern lets the client fire-and-forget, then poll. Back with a task queue (Celery / RQ) and object storage in production.</div>
+<span class="cmt"># 2. GET /jobs/{job_id} &mdash; poll until "complete" or "error"</span>
+<span class="dec">@router.get</span>(<span class="str">"/jobs/{job_id}"</span>)
+<span class="kw">async def</span> <span class="fn">get_job_status</span>(job_id):
+    job = get_job(job_id)  <span class="cmt"># returns None if expired (1h TTL)</span>
+    <span class="kw">return</span> {<span class="str">"job_id"</span>: job_id, <span class="str">"status"</span>: job[<span class="str">"status"</span>], <span class="str">"error"</span>: job.get(<span class="str">"error"</span>)}
+
+<span class="cmt"># 3. GET /jobs/{job_id}/download &mdash; fetch the ZIP</span>
+<span class="dec">@router.get</span>(<span class="str">"/jobs/{job_id}/download"</span>)
+<span class="kw">async def</span> <span class="fn">download_job_result</span>(job_id):
+    <span class="kw">return</span> StreamingResponse(io.BytesIO(job[<span class="str">"zip_bytes"</span>]), media_type=<span class="str">"application/zip"</span>, ...)</pre>
+  <div class="note">Sidesteps Render's 30s response timeout for large orders. The client gets a job ID in milliseconds and polls until the background download completes. Jobs expire after 1 hour. The background task reuses the same <code>_run_batch()</code> helper as the synchronous endpoint — no duplicated logic.</div>
 
 </div>
 </div><!-- /tab-production -->
