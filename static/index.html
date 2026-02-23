@@ -288,6 +288,7 @@
       <li><span class="check">&#10003;</span><span><strong>Redirects</strong> &mdash; Autoenhance returns 302 &rarr; asset server &rarr; S3. The client follows these transparently.</span></li>
       <li><span class="check">&#10003;</span><span><strong>Connection reuse</strong> &mdash; A shared <code>httpx.AsyncClient</code> is created once at startup via FastAPI lifespan. All requests reuse the same connection pool instead of creating one per request.</span></li>
       <li><span class="check">&#10003;</span><span><strong>Memory</strong> &mdash; Peak memory is bounded by the semaphore (max 5 in-flight), not the order size. The ZIP uses a <code>SpooledTemporaryFile</code> that spills to disk above 10 MB. Orders capped at 100 images as a safety limit.</span></li>
+      <li><span class="check">&#10003;</span><span><strong>Async job pattern</strong> &mdash; <code>POST /orders/{id}/jobs</code> returns a job ID immediately (202). Poll <code>GET /jobs/{id}</code> for status; download via <code>GET /jobs/{id}/download</code>. Sidesteps server timeouts on large orders without duplicating any download logic.</span></li>
     </ul>
   </details>
 </div>
@@ -306,7 +307,7 @@
     <h3>Possible extensions</h3>
     <ul class="handled">
       <li><span class="check">&#8594;</span><span><strong>Poll-until-ready</strong> &mdash; A <code>wait=true</code> param that retries until all images are processed before downloading.</span></li>
-      <li><span class="check">&#10003;</span><span><strong>Async job pattern</strong> &mdash; <code>POST /orders/{id}/jobs</code> starts the download and returns a job ID immediately (202); poll <code>GET /jobs/{id}</code> for status; fetch <code>GET /jobs/{id}/download</code> when ready. Sidesteps Render's 30s response timeout for large orders.</span></li>
+      <li><span class="check">&#8594;</span><span><strong>Async job pattern</strong> &mdash; Implemented — see Design decisions above.</span></li>
       <li><span class="check">&#8594;</span><span><strong>Webhook integration</strong> &mdash; Auto-trigger the batch download when Autoenhance signals an order is complete.</span></li>
     </ul>
   </details>
@@ -516,6 +517,49 @@ logger.error(<span class="str">"Upstream error: %d %s"</span>, status, text)
 <span class="kw">raise</span> HTTPException(<span class="num">502</span>, <span class="str">"Failed to retrieve order"</span>)</pre>
   <div class="note">CORS blocks cross-origin abuse. Security headers prevent clickjacking, MIME sniffing, and referrer leaks. Admin token is set as an <code>httponly</code> cookie — not visible in page source or accessible to JavaScript. Timing-safe comparison via <code>hmac.compare_digest</code> protects <code>/api/create-order</code>, <code>/api/create-sample-order</code>, and <code>/sentry-debug</code> from unauthorized use. Upstream API error bodies are logged server-side but never exposed to clients.</div>
 
+  <h3>Response Caching <span class="pill done">IMPLEMENTED</span></h3>
+  <p class="file-ref">app/state.py — ZIP-level cache by (order_id, format, quality, preview, dev_mode)</p>
+  <pre><span class="cmt"># state.py — TTL dict, bypassed automatically during pytest</span>
+_zip_cache: dict[tuple, dict] = {}
+
+<span class="kw">def</span> <span class="fn">get_cached_zip</span>(key: tuple) -> dict | <span class="kw">None</span>:
+    entry = _zip_cache.get(key)
+    <span class="kw">if</span> entry <span class="kw">and</span> time.time() - entry[<span class="str">"cached_at"</span>] &lt; ZIP_CACHE_TTL_SECONDS:
+        <span class="kw">return</span> entry
+    _zip_cache.pop(key, <span class="kw">None</span>)
+    <span class="kw">return None</span>
+
+<span class="cmt"># batch.py — check before downloading, store after</span>
+cache_key = (order_id, image_format, quality, preview, dev_mode)
+cached = get_cached_zip(cache_key)
+<span class="kw">if</span> cached:
+    <span class="kw">return</span> StreamingResponse(io.BytesIO(cached[<span class="str">"zip_bytes"</span>]), ...)
+zip_bytes, filename, headers = <span class="kw">await</span> _run_batch(...)
+set_cached_zip(cache_key, zip_bytes, filename, headers)</pre>
+  <div class="note">ZIP responses are cached in-process for 1 hour. A repeat request for the same order + params is served instantly without touching the upstream API. Cache is disabled during pytest (via <code>PYTEST_CURRENT_TEST</code>) to prevent test cross-contamination. In production, swap for Redis with a TTL.</div>
+
+  <h3>Async Job Pattern for Large Orders <span class="pill done">IMPLEMENTED</span></h3>
+  <p class="file-ref">app/routes/jobs.py</p>
+  <pre><span class="cmt"># 1. POST /orders/{order_id}/jobs &mdash; returns 202 immediately</span>
+<span class="dec">@router.post</span>(<span class="str">"/orders/{order_id}/jobs"</span>, status_code=<span class="num">202</span>)
+<span class="kw">async def</span> <span class="fn">create_batch_job</span>(order_id, background_tasks, ...):
+    job_id = str(uuid.uuid4())
+    set_job(job_id, {<span class="str">"status"</span>: <span class="str">"processing"</span>, ...})
+    background_tasks.add_task(_process_job, job_id, order_id, ...)
+    <span class="kw">return</span> {<span class="str">"job_id"</span>: job_id}
+
+<span class="cmt"># 2. GET /jobs/{job_id} &mdash; poll until "complete" or "error"</span>
+<span class="dec">@router.get</span>(<span class="str">"/jobs/{job_id}"</span>)
+<span class="kw">async def</span> <span class="fn">get_job_status</span>(job_id):
+    job = get_job(job_id)  <span class="cmt"># returns None if expired (1h TTL)</span>
+    <span class="kw">return</span> {<span class="str">"job_id"</span>: job_id, <span class="str">"status"</span>: job[<span class="str">"status"</span>], <span class="str">"error"</span>: job.get(<span class="str">"error"</span>)}
+
+<span class="cmt"># 3. GET /jobs/{job_id}/download &mdash; fetch the ZIP</span>
+<span class="dec">@router.get</span>(<span class="str">"/jobs/{job_id}/download"</span>)
+<span class="kw">async def</span> <span class="fn">download_job_result</span>(job_id):
+    <span class="kw">return</span> StreamingResponse(io.BytesIO(job[<span class="str">"zip_bytes"</span>]), media_type=<span class="str">"application/zip"</span>, ...)</pre>
+  <div class="note">Sidesteps Render's 30s response timeout for large orders. The client gets a job ID in milliseconds and polls until the background download completes. Jobs expire after 1 hour. The background task reuses the same <code>_run_batch()</code> helper as the synchronous endpoint — no duplicated logic.</div>
+
   <h3>Circuit Breaker Pattern <span class="pill new">NEXT STEP</span></h3>
   <p class="file-ref">How it would integrate into batch.py</p>
   <pre><span class="kw">class</span> <span class="fn">CircuitBreaker</span>:
@@ -545,27 +589,6 @@ logger.error(<span class="str">"Upstream error: %d %s"</span>, status, text)
         headers={<span class="str">"Retry-After"</span>: <span class="str">"60"</span>})</pre>
   <div class="note">Prevents cascading failures. After 5 consecutive errors, returns 503 immediately for 60s instead of letting every request time out.</div>
 
-  <h3>Response Caching <span class="pill done">IMPLEMENTED</span></h3>
-  <p class="file-ref">app/state.py — ZIP-level cache by (order_id, format, quality, preview, dev_mode)</p>
-  <pre><span class="cmt"># state.py — TTL dict, bypassed automatically during pytest</span>
-_zip_cache: dict[tuple, dict] = {}
-
-<span class="kw">def</span> <span class="fn">get_cached_zip</span>(key: tuple) -> dict | <span class="kw">None</span>:
-    entry = _zip_cache.get(key)
-    <span class="kw">if</span> entry <span class="kw">and</span> time.time() - entry[<span class="str">"cached_at"</span>] &lt; ZIP_CACHE_TTL_SECONDS:
-        <span class="kw">return</span> entry
-    _zip_cache.pop(key, <span class="kw">None</span>)
-    <span class="kw">return None</span>
-
-<span class="cmt"># batch.py — check before downloading, store after</span>
-cache_key = (order_id, image_format, quality, preview, dev_mode)
-cached = get_cached_zip(cache_key)
-<span class="kw">if</span> cached:
-    <span class="kw">return</span> StreamingResponse(io.BytesIO(cached[<span class="str">"zip_bytes"</span>]), ...)
-zip_bytes, filename, headers = <span class="kw">await</span> _run_batch(...)
-set_cached_zip(cache_key, zip_bytes, filename, headers)</pre>
-  <div class="note">ZIP responses are cached in-process for 1 hour. A repeat request for the same order + params is served instantly without touching the upstream API. Cache is disabled during pytest (via <code>PYTEST_CURRENT_TEST</code>) to prevent test cross-contamination. In production, swap for Redis with a TTL.</div>
-
   <h3>Rate Limiting Our Endpoint <span class="pill new">NEXT STEP</span></h3>
   <pre><span class="cmt"># Using slowapi (built on limits library)</span>
 <span class="kw">from</span> slowapi <span class="kw">import</span> Limiter
@@ -578,28 +601,6 @@ limiter = Limiter(key_func=get_remote_address)
 <span class="kw">async def</span> <span class="fn">batch_download_order_images</span>(request: Request, ...):
     ...</pre>
   <div class="note">Each batch call fans out to N upstream requests. Without throttling, one caller could exhaust API quotas. 10 req/min per IP is a reasonable default.</div>
-
-  <h3>Async Job Pattern for Large Orders <span class="pill done">IMPLEMENTED</span></h3>
-  <p class="file-ref">app/routes/jobs.py</p>
-  <pre><span class="cmt"># 1. POST /orders/{order_id}/jobs &mdash; returns 202 immediately</span>
-<span class="dec">@router.post</span>(<span class="str">"/orders/{order_id}/jobs"</span>, status_code=<span class="num">202</span>)
-<span class="kw">async def</span> <span class="fn">create_batch_job</span>(order_id, background_tasks, ...):
-    job_id = str(uuid.uuid4())
-    set_job(job_id, {<span class="str">"status"</span>: <span class="str">"processing"</span>, ...})
-    background_tasks.add_task(_process_job, job_id, order_id, ...)
-    <span class="kw">return</span> {<span class="str">"job_id"</span>: job_id}
-
-<span class="cmt"># 2. GET /jobs/{job_id} &mdash; poll until "complete" or "error"</span>
-<span class="dec">@router.get</span>(<span class="str">"/jobs/{job_id}"</span>)
-<span class="kw">async def</span> <span class="fn">get_job_status</span>(job_id):
-    job = get_job(job_id)  <span class="cmt"># returns None if expired (1h TTL)</span>
-    <span class="kw">return</span> {<span class="str">"job_id"</span>: job_id, <span class="str">"status"</span>: job[<span class="str">"status"</span>], <span class="str">"error"</span>: job.get(<span class="str">"error"</span>)}
-
-<span class="cmt"># 3. GET /jobs/{job_id}/download &mdash; fetch the ZIP</span>
-<span class="dec">@router.get</span>(<span class="str">"/jobs/{job_id}/download"</span>)
-<span class="kw">async def</span> <span class="fn">download_job_result</span>(job_id):
-    <span class="kw">return</span> StreamingResponse(io.BytesIO(job[<span class="str">"zip_bytes"</span>]), media_type=<span class="str">"application/zip"</span>, ...)</pre>
-  <div class="note">Sidesteps Render's 30s response timeout for large orders. The client gets a job ID in milliseconds and polls until the background download completes. Jobs expire after 1 hour. The background task reuses the same <code>_run_batch()</code> helper as the synchronous endpoint — no duplicated logic.</div>
 
 </div>
 </div><!-- /tab-production -->
