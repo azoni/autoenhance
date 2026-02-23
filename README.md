@@ -2,7 +2,9 @@
 
 A FastAPI service that downloads all enhanced images for a given Autoenhance order and returns them as a ZIP archive.
 
-> **[Live demo](https://autoenhance.onrender.com)** — try the endpoint with sample images, view error tracking, and see the production hardening details (security, observability, architecture decisions) in the **Production Version** tab.
+> **[Live demo](https://autoenhance.onrender.com)** — the test order is pre-loaded, just hit Download ZIP.
+
+**The batch endpoint logic is in [`app/routes/batch.py`](app/routes/batch.py).**
 
 ## The Endpoint
 
